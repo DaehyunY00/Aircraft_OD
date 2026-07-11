@@ -20,6 +20,7 @@ from src.data.normalize_yolo_dataset import normalize_dataset
 from src.eval.collect_yolo_metrics import collect_metrics
 from src.eval.compute_long_tail_metrics import compute_long_tail_metrics
 from src.eval.plot_results import plot_results
+from src.eval.statistics import run_statistical_tests
 from src.train.train_yolo import train_yolo
 from src.utils.io import ensure_dir, load_config, save_json
 from src.utils.timing import ProgressTimer, format_duration
@@ -329,7 +330,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
     per_class_path = outputs / "metrics" / "per_class_ap.csv"
     groups_path = outputs / "analysis" / "class_groups.csv"
     if raw_path.exists() and per_class_path.exists() and groups_path.exists():
-        compute_long_tail_metrics(raw_path, per_class_path, groups_path, outputs)
+        compute_long_tail_metrics(raw_path, per_class_path, groups_path, outputs, tail_cfg=cfg.get("tail", {}))
+        try:
+            run_statistical_tests(per_class_path, groups_path, outputs, cfg, eval_split=eval_split)
+        except Exception as exc:
+            print(f"[WARN] 통계 검정 단계 실패 (실험 결과 자체는 저장됨): {exc}")
         plot_results(outputs, eval_split=eval_split)
     print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
 

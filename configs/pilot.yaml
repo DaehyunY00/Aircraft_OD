@@ -33,6 +33,15 @@ tail:
   method: "bottom_percent"
   bottom_percent: 0.3
   min_val_instances: 3
+  group_thresholds:              # LVIS식 명시적 threshold 그룹 (병행 보고)
+    tail_max_instances: 50       # train instance <= 50 -> tail
+    medium_max_instances: 200    # 50 < instance <= 200 -> medium, 초과 -> head
+
+statistics:
+  comparison_pairs:              # Wilcoxon signed-rank 대응 쌍 (variant_a vs variant_b)
+    - ["aug_selective_inpaint", "aug_uniform_inpaint"]
+    - ["aug_selective_inpaint", "basic_aug"]
+  confidence: 0.95               # seed macro AP CI 신뢰수준
 
 selective_generation:
   alpha: 0.6

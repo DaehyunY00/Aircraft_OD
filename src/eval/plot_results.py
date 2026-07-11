@@ -28,6 +28,73 @@ def _bar(df: pd.DataFrame, x: str, y: str, path: Path, title: str, ylabel: str) 
     plt.close()
 
 
+GROUP_COLORS = {"head": "#2f6f8f", "medium": "#6a8f3a", "tail": "#b54c3f"}
+
+
+def _plot_delta_vs_baseline(
+    per_class: pd.DataFrame,
+    groups: pd.DataFrame,
+    figures: Path,
+    baseline: str = "basic_aug",
+) -> None:
+    """RQ3 plots: per-class AP delta vs the basic_aug baseline (Gen2Det-style).
+
+    Scatter (delta vs train instance count, colored by head/medium/tail group)
+    per variant plus one violin comparing delta distributions across variants —
+    shows whether tail gains come without head damage.
+    """
+    if per_class.empty or baseline not in set(per_class["experiment"]):
+        return
+    ap_col = "ap50_95" if "ap50_95" in per_class.columns else "ap50"
+    class_mean = per_class.groupby(["experiment", "class_id"], as_index=False)[ap_col].mean()
+    base = class_mean[class_mean["experiment"] == baseline].set_index("class_id")[ap_col]
+    meta_cols = ["class_id", "group"] + (["instance_count"] if "instance_count" in groups.columns else [])
+    meta = groups[meta_cols].set_index("class_id")
+    deltas: dict[str, pd.DataFrame] = {}
+    for variant, df in class_mean.groupby("experiment"):
+        if variant in (baseline, "real_only"):
+            continue
+        merged = df.set_index("class_id").join(meta, how="left")
+        merged["delta"] = merged[ap_col] - base
+        merged = merged.dropna(subset=["delta"])
+        if not merged.empty:
+            deltas[variant] = merged
+
+    for variant, merged in deltas.items():
+        if "instance_count" not in merged.columns:
+            continue
+        plt.figure(figsize=(7, 4.5))
+        for group_name, group_df in merged.groupby("group"):
+            plt.scatter(
+                group_df["instance_count"],
+                group_df["delta"],
+                label=str(group_name),
+                color=GROUP_COLORS.get(str(group_name), "#777777"),
+                alpha=0.8,
+            )
+        plt.axhline(0.0, color="black", linewidth=0.8)
+        plt.xscale("log")
+        plt.xlabel("Train instances (log)")
+        plt.ylabel(f"Δ{ap_col} vs {baseline}")
+        plt.title(f"Per-class AP delta: {variant}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(figures / f"delta_ap_scatter_{variant}.png", dpi=180)
+        plt.close()
+
+    if deltas:
+        plt.figure(figsize=(max(6, 2 * len(deltas)), 4.5))
+        names = list(deltas)
+        plt.violinplot([deltas[name]["delta"].to_numpy() for name in names], showmedians=True)
+        plt.axhline(0.0, color="black", linewidth=0.8)
+        plt.xticks(range(1, len(names) + 1), names, rotation=20, ha="right")
+        plt.ylabel(f"Δ{ap_col} vs {baseline}")
+        plt.title("Per-class AP delta distribution by variant")
+        plt.tight_layout()
+        plt.savefig(figures / "delta_ap_violin_by_variant.png", dpi=180)
+        plt.close()
+
+
 def _filter_eval_split(df: pd.DataFrame, eval_split: str | None) -> pd.DataFrame:
     if eval_split and "eval_split" in df.columns:
         filtered = df[df["eval_split"] == eval_split].copy()
@@ -99,6 +166,11 @@ def plot_results(outputs: str | Path, eval_split: str | None = None) -> None:
             plt.tight_layout()
             plt.savefig(figures / "per_class_ap_before_after_selective.png", dpi=180)
             plt.close()
+
+    groups_path = analysis / "class_groups.csv"
+    if per_class_path.exists() and groups_path.exists():
+        per_class = _filter_eval_split(pd.read_csv(per_class_path), eval_split)
+        _plot_delta_vs_baseline(per_class, pd.read_csv(groups_path), figures)
 
     for plan_name in ("augmentation_plan_uniform.csv", "augmentation_plan_selective.csv"):
         plan_path = analysis / plan_name

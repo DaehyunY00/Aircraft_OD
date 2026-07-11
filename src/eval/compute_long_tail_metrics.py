@@ -14,11 +14,34 @@ import pandas as pd
 from src.utils.io import ensure_dir
 
 
+def assign_threshold_groups(groups: pd.DataFrame, group_thresholds: dict) -> pd.DataFrame:
+    """LVIS-style explicit count-threshold grouping on train instance counts.
+
+    tail: instance_count <= tail_max_instances; medium: <= medium_max_instances;
+    head: the rest. Reported alongside the bottom_percent grouping so reviewers
+    can see both conventions.
+    """
+    tail_max = int(group_thresholds.get("tail_max_instances", 50))
+    medium_max = int(group_thresholds.get("medium_max_instances", 200))
+    if medium_max <= tail_max:
+        raise ValueError(
+            f"tail.group_thresholds: medium_max_instances({medium_max})는 "
+            f"tail_max_instances({tail_max})보다 커야 합니다."
+        )
+    df = groups.copy()
+    counts = df["instance_count"].astype(int)
+    df["group_threshold"] = "head"
+    df.loc[counts <= medium_max, "group_threshold"] = "medium"
+    df.loc[counts <= tail_max, "group_threshold"] = "tail"
+    return df
+
+
 def compute_long_tail_metrics(
     raw_metrics_csv: str | Path,
     per_class_ap_csv: str | Path,
     class_groups_csv: str | Path,
     outputs: str | Path,
+    tail_cfg: dict | None = None,
 ) -> tuple[Path, Path]:
     outputs = Path(outputs)
     metrics_dir = ensure_dir(outputs / "metrics")
@@ -62,7 +85,29 @@ def compute_long_tail_metrics(
         summary = summary.merge(baseline, on=["seed", "eval_split"], how="left")
         summary[f"tail_ap_gain_vs_{suffix}"] = summary["tail_ap"] - summary[f"baseline_tail_ap_{suffix}"]
         summary[f"macro_ap_gain_vs_{suffix}"] = summary["macro_ap"] - summary[f"baseline_macro_ap_{suffix}"]
-    analysis_dir = outputs / "analysis"
+    analysis_dir = ensure_dir(outputs / "analysis")
+    threshold_cfg = (tail_cfg or {}).get("group_thresholds")
+    if threshold_cfg and "instance_count" in groups.columns:
+        thr_groups = assign_threshold_groups(groups, threshold_cfg)
+        thr_groups.to_csv(analysis_dir / "class_groups_threshold.csv", index=False)
+        thr_merged = per_class.merge(thr_groups[["class_id", "group_threshold"]], on="class_id", how="left")
+        thr_scores = (
+            thr_merged.groupby([*keys, "group_threshold"], as_index=False)[ap_col]
+            .mean()
+            .pivot(index=keys, columns="group_threshold", values=ap_col)
+            .reset_index()
+        )
+        for group in ("head", "medium", "tail"):
+            if group not in thr_scores.columns:
+                thr_scores[group] = pd.NA
+        thr_scores = thr_scores.rename(
+            columns={group: f"{group}_ap_threshold" for group in ("head", "medium", "tail")}
+        )
+        summary = summary.merge(
+            thr_scores[[*keys, "head_ap_threshold", "medium_ap_threshold", "tail_ap_threshold"]],
+            on=keys,
+            how="left",
+        )
     synthetic_counts = {"real_only": 0, "basic_aug": 0}
     uniform_plan = analysis_dir / "augmentation_plan_uniform.csv"
     selective_plan = analysis_dir / "augmentation_plan_selective.csv"
@@ -95,12 +140,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-class", required=True)
     parser.add_argument("--groups", required=True)
     parser.add_argument("--outputs", required=True)
+    parser.add_argument("--config", default=None, help="Config with tail.group_thresholds for threshold-group metrics")
     return parser.parse_args()
 
 
 def main() -> None:
+    from src.utils.io import load_config
+
     args = parse_args()
-    compute_long_tail_metrics(args.raw, args.per_class, args.groups, args.outputs)
+    tail_cfg = load_config(args.config).get("tail") if args.config else None
+    compute_long_tail_metrics(args.raw, args.per_class, args.groups, args.outputs, tail_cfg=tail_cfg)
 
 
 if __name__ == "__main__":
