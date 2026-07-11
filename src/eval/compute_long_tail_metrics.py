@@ -53,28 +53,33 @@ def compute_long_tail_metrics(
     summary = summary.rename(columns={"head": "head_ap", "medium": "medium_ap", "tail": "tail_ap"})
     summary["head_tail_ap_gap"] = summary["head_ap"] - summary["tail_ap"]
 
-    baseline = summary[summary["experiment"] == "real_only"][["seed", "eval_split", "tail_ap", "macro_ap"]].rename(
-        columns={"tail_ap": "baseline_tail_ap", "macro_ap": "baseline_macro_ap"}
-    )
-    summary = summary.merge(baseline, on=["seed", "eval_split"], how="left")
-    summary["tail_ap_gain_vs_real_only"] = summary["tail_ap"] - summary["baseline_tail_ap"]
-    summary["macro_ap_gain_vs_real_only"] = summary["macro_ap"] - summary["baseline_macro_ap"]
+    # Gains against both references: real_only (historic lower bound) and
+    # basic_aug (the primary baseline; RQ1 is the marginal gain over it).
+    for ref, suffix in (("real_only", "real_only"), ("basic_aug", "basic_aug")):
+        baseline = summary[summary["experiment"] == ref][["seed", "eval_split", "tail_ap", "macro_ap"]].rename(
+            columns={"tail_ap": f"baseline_tail_ap_{suffix}", "macro_ap": f"baseline_macro_ap_{suffix}"}
+        )
+        summary = summary.merge(baseline, on=["seed", "eval_split"], how="left")
+        summary[f"tail_ap_gain_vs_{suffix}"] = summary["tail_ap"] - summary[f"baseline_tail_ap_{suffix}"]
+        summary[f"macro_ap_gain_vs_{suffix}"] = summary["macro_ap"] - summary[f"baseline_macro_ap_{suffix}"]
     analysis_dir = outputs / "analysis"
     synthetic_counts = {"real_only": 0, "basic_aug": 0}
     uniform_plan = analysis_dir / "augmentation_plan_uniform.csv"
     selective_plan = analysis_dir / "augmentation_plan_selective.csv"
     if uniform_plan.exists():
-        synthetic_counts["uniform_tail_inpaint"] = int(pd.read_csv(uniform_plan)["num_synthetic_images"].sum())
+        synthetic_counts["aug_uniform_inpaint"] = int(pd.read_csv(uniform_plan)["num_synthetic_images"].sum())
     if selective_plan.exists():
         selective_count = int(pd.read_csv(selective_plan)["num_synthetic_images"].sum())
-        synthetic_counts["selective_tail_inpaint"] = selective_count
-        synthetic_counts["tail_oversampling"] = selective_count
+        synthetic_counts["aug_selective_inpaint"] = selective_count
+        synthetic_counts["aug_oversample"] = selective_count
+        synthetic_counts["aug_copy_paste"] = selective_count
     summary["synthetic_images"] = summary["experiment"].map(synthetic_counts).fillna(0).astype(int)
     denom = summary["synthetic_images"].astype(float).where(summary["synthetic_images"] > 0)
-    summary["ap_gain_per_100_synthetic_images"] = summary["tail_ap_gain_vs_real_only"] / denom * 100.0
-    summary["ap_gain_per_generated_image"] = summary["tail_ap_gain_vs_real_only"] / denom
+    # Budget-efficiency metrics measure the marginal tail gain over basic_aug.
+    summary["ap_gain_per_100_synthetic_images"] = summary["tail_ap_gain_vs_basic_aug"] / denom * 100.0
+    summary["ap_gain_per_generated_image"] = summary["tail_ap_gain_vs_basic_aug"] / denom
     training_hours = (summary["training_seconds"].astype(float) / 3600.0).where(summary["training_seconds"].astype(float) > 0)
-    summary["ap_gain_per_training_hour"] = summary["tail_ap_gain_vs_real_only"] / training_hours
+    summary["ap_gain_per_training_hour"] = summary["tail_ap_gain_vs_basic_aug"] / training_hours
 
     summary_path = metrics_dir / "summary_by_experiment.csv"
     long_path = metrics_dir / "long_tail_metrics.csv"

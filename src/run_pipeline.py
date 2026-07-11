@@ -23,6 +23,7 @@ from src.eval.plot_results import plot_results
 from src.train.train_yolo import train_yolo
 from src.utils.io import ensure_dir, load_config, save_json
 from src.utils.timing import ProgressTimer, format_duration
+from src.utils.variants import uses_basic_aug
 
 
 def _best_weights(run_dir: Path) -> Path | None:
@@ -45,7 +46,7 @@ def _train_and_collect(
     resume_training: bool = True,
     force_new_training: bool = False,
 ) -> Path:
-    use_basic_aug = variant == "basic_aug"
+    use_basic_aug = uses_basic_aug(variant)
     run_dir = train_yolo(
         data_yaml,
         cfg,
@@ -108,10 +109,19 @@ def _collect_for_split(
     )
 
 
-def _baseline_ap_for_planning(per_class_ap: pd.DataFrame | None, planning_split: str) -> pd.DataFrame | None:
+def _baseline_ap_for_planning(
+    per_class_ap: pd.DataFrame | None,
+    planning_split: str,
+    baseline_variant: str = "basic_aug",
+) -> pd.DataFrame | None:
+    """Per-class AP of the planning baseline on the planning split only.
+
+    The weakness score must reference the strong basic_aug baseline (the run all
+    tail techniques are compared against), never a test-split AP.
+    """
     if per_class_ap is None or per_class_ap.empty:
         return None
-    baseline = per_class_ap[per_class_ap["experiment"] == "real_only"].copy()
+    baseline = per_class_ap[per_class_ap["experiment"] == baseline_variant].copy()
     if "eval_split" in baseline.columns:
         baseline = baseline[baseline["eval_split"] == planning_split]
     return baseline if not baseline.empty else None
@@ -223,29 +233,37 @@ def run_pipeline(args: argparse.Namespace) -> None:
             print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
             return
 
-        for seed in cfg.get("detector", {}).get("seeds", [42]):
-            seed = int(seed)
-            print(f"[시간] 학습 작업 시작: real_only, seed={seed} | 계획 metric 수집 split={planning_split}")
-            run_dir = _train_and_collect(
-                base_data_yaml,
-                cfg,
-                outputs,
-                "real_only",
-                seed,
-                planning_split,
-                resume_training=resume_training,
-                force_new_training=args.force_new_training,
-            )
-            if eval_split != planning_split:
-                print(f"[시간] real_only 최종 평가 metric 수집: seed={seed}, split={eval_split}")
-                _collect_for_split(run_dir, base_data_yaml, cfg, outputs, "real_only", seed, eval_split)
+        # Baseline runs come first: real_only (reference lower bound) and
+        # basic_aug (the primary baseline every tail technique is measured
+        # against, and the source of the weakness score for selective planning).
+        baseline_variant = str(cfg.get("planning", {}).get("baseline_variant", "basic_aug"))
+        for variant in ("real_only", "basic_aug"):
+            for seed in cfg.get("detector", {}).get("seeds", [42]):
+                seed = int(seed)
+                print(f"[시간] 학습 작업 시작: {variant}, seed={seed} | 계획 metric 수집 split={planning_split}")
+                run_dir = _train_and_collect(
+                    base_data_yaml,
+                    cfg,
+                    outputs,
+                    variant,
+                    seed,
+                    planning_split,
+                    resume_training=resume_training,
+                    force_new_training=args.force_new_training,
+                )
+                if eval_split != planning_split:
+                    print(f"[시간] {variant} 최종 평가 metric 수집: seed={seed}, split={eval_split}")
+                    _collect_for_split(run_dir, base_data_yaml, cfg, outputs, variant, seed, eval_split)
 
         per_class_path = outputs / "metrics" / "per_class_ap.csv"
         baseline_ap = pd.read_csv(per_class_path) if per_class_path.exists() else None
         grouped = pd.read_csv(outputs / "analysis" / "class_groups.csv")
-        planning_baseline_ap = _baseline_ap_for_planning(baseline_ap, planning_split)
+        planning_baseline_ap = _baseline_ap_for_planning(baseline_ap, planning_split, baseline_variant)
         if planning_baseline_ap is None:
-            print(f"[WARN] 계획 split={planning_split}의 real_only AP를 찾지 못했습니다. class frequency만으로 synthetic plan을 생성합니다.")
+            print(
+                f"[WARN] 계획 split={planning_split}의 {baseline_variant} AP를 찾지 못했습니다. "
+                "class frequency만으로 synthetic plan을 생성합니다."
+            )
         uniform_plan, selective_plan = build_augmentation_plans(
             grouped,
             planning_baseline_ap,
@@ -294,8 +312,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         )
         jobs = []
         for variant, data_yaml in experiment_yamls.items():
-            if variant == "real_only":
-                continue
+            if variant in ("real_only", "basic_aug"):
+                continue  # already trained on the base dataset above
             for seed in cfg.get("detector", {}).get("seeds", [42]):
                 jobs.append((variant, int(seed), data_yaml))
         _run_training_jobs(

@@ -73,9 +73,9 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
             "variants": [
                 "real_only",
                 "basic_aug",
-                "tail_oversampling",
-                "uniform_tail_inpaint",
-                "selective_tail_inpaint",
+                "aug_oversample",
+                "aug_uniform_inpaint",
+                "aug_selective_inpaint",
             ]
         },
     }

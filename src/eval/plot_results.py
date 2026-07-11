@@ -85,14 +85,14 @@ def plot_results(outputs: str | Path, eval_split: str | None = None) -> None:
     per_class_path = metrics / "per_class_ap.csv"
     if per_class_path.exists():
         per_class = _filter_eval_split(pd.read_csv(per_class_path), eval_split)
-        if not per_class.empty and {"real_only", "selective_tail_inpaint"}.issubset(set(per_class["experiment"])):
+        if not per_class.empty and {"basic_aug", "aug_selective_inpaint"}.issubset(set(per_class["experiment"])):
             ap_col = "ap50_95" if "ap50_95" in per_class.columns else "ap50"
             pivot = per_class.pivot_table(index=["class_id", "class_name"], columns="experiment", values=ap_col, aggfunc="mean")
             pivot = pivot.reset_index()
             plt.figure(figsize=(12, 5))
             x = range(len(pivot))
-            plt.bar([i - 0.2 for i in x], pivot.get("real_only", 0), width=0.4, label="real_only")
-            plt.bar([i + 0.2 for i in x], pivot.get("selective_tail_inpaint", 0), width=0.4, label="selective")
+            plt.bar([i - 0.2 for i in x], pivot.get("basic_aug", 0), width=0.4, label="basic_aug")
+            plt.bar([i + 0.2 for i in x], pivot.get("aug_selective_inpaint", 0), width=0.4, label="selective inpaint")
             plt.xticks(list(x), pivot["class_name"].astype(str), rotation=90, fontsize=7)
             plt.ylabel(ap_col)
             plt.legend()

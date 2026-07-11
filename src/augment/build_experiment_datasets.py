@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from src.augment.oversample_tail import oversample_from_plan
 from src.utils.io import copy_or_symlink, ensure_dir, load_config
+from src.utils.variants import parse_variant
 from src.utils.yolo import create_data_yaml, label_path_for_image, list_images, normalize_class_names
 
 
@@ -97,7 +98,7 @@ def build_experiment_datasets(
     class_names = class_names or normalize_class_names(data.get("names"), data.get("nc"))
     experiments_root = ensure_dir(experiments_root)
     synthetic_root = Path(synthetic_root) if synthetic_root else data["_root"].parent / "synthetic_inpaint"
-    variants = variants or ["real_only", "basic_aug", "tail_oversampling", "uniform_tail_inpaint", "selective_tail_inpaint"]
+    variants = variants or ["real_only", "basic_aug", "aug_oversample", "aug_uniform_inpaint", "aug_selective_inpaint"]
 
     train_images, train_labels = split_dirs(base_data_yaml, "train")
     val_images, val_labels = split_dirs(base_data_yaml, "val")
@@ -105,12 +106,13 @@ def build_experiment_datasets(
     outputs: dict[str, Path] = {}
 
     for variant in variants:
+        spec = parse_variant(variant)
         variant_root = ensure_dir(experiments_root / variant)
         copy_split(train_images, train_labels, variant_root, "train", overwrite=overwrite)
         copy_split(val_images, val_labels, variant_root, "val", overwrite=overwrite)
         copy_split(test_images, test_labels, variant_root, "test", overwrite=overwrite)
 
-        if variant == "tail_oversampling" and selective_plan:
+        if spec.base == "aug_oversample" and selective_plan:
             created = oversample_from_plan(
                 variant_root / "images" / "train",
                 variant_root / "labels" / "train",
@@ -119,13 +121,13 @@ def build_experiment_datasets(
                 variant_root / "labels" / "train",
                 overwrite=overwrite,
             )
-            print(f"[INFO] tail_oversampling 추가 샘플 수: {created}")
-        elif variant == "uniform_tail_inpaint":
+            print(f"[INFO] {variant} 추가 샘플 수: {created}")
+        elif spec.base == "aug_uniform_inpaint":
             added = add_synthetic_split(synthetic_root / "uniform", variant_root, overwrite=overwrite)
-            print(f"[INFO] uniform_tail_inpaint synthetic 추가 수: {added}")
-        elif variant == "selective_tail_inpaint":
+            print(f"[INFO] {variant} synthetic 추가 수: {added}")
+        elif spec.base == "aug_selective_inpaint":
             added = add_synthetic_split(synthetic_root / "selective", variant_root, overwrite=overwrite)
-            print(f"[INFO] selective_tail_inpaint synthetic 추가 수: {added}")
+            print(f"[INFO] {variant} synthetic 추가 수: {added}")
 
         outputs[variant] = create_data_yaml(variant_root, class_names, variant_root / "data.yaml")
     return outputs

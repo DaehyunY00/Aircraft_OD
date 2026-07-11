@@ -27,6 +27,7 @@ eval:
 
 planning:
   split: "val"
+  baseline_variant: "basic_aug"  # selective plan의 weakness score 기준 run
 
 tail:
   method: "bottom_percent"
@@ -69,6 +70,6 @@ experiments:
   variants:
     - real_only
     - basic_aug
-    - tail_oversampling
-    - uniform_tail_inpaint
-    - selective_tail_inpaint
+    - aug_oversample
+    - aug_uniform_inpaint
+    - aug_selective_inpaint

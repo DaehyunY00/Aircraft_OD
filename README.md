@@ -4,9 +4,17 @@ SCI급 연구 논문 작성을 목표로 한 long-tailed military aircraft detec
 
 ## Research Questions
 
-1. Tail class selective diffusion background inpainting은 real-only, YOLO 기본 증강, tail oversampling 대비 tail AP를 개선하는가?
-2. 같은 synthetic image budget에서 selective tail generation은 uniform tail generation보다 효율적인가?
-3. Tail AP 개선이 head-class AP 또는 overall mAP 손상 없이 가능한가?
+1. **RQ1 (marginal gain)**: 강한 baseline(`basic_aug`, Ultralytics 기본 증강) 위에 tail-class
+   diffusion background inpainting을 얹으면 tail AP의 **추가(marginal) 개선**이 있는가?
+   (tail oversampling, RFS, Copy-Paste 등 표준 리밸런싱 대비 포함)
+2. **RQ2 (budget 배분)**: 같은 synthetic image budget에서 rarity×weakness priority 기반
+   selective generation이 uniform tail generation(= Li et al. ECCV 2024 방식의 tail 적용)보다
+   효율적인가?
+3. **RQ3 (head 보존)**: Tail AP 개선이 head-class AP 또는 overall mAP 손상 없이 가능한가?
+
+모든 tail 기법 variant는 `basic_aug` 위에서 비교합니다(2403.07113, X-Paste/Gen2Det/DiverGen의
+보고 관행). 기본 증강을 끈 단독 비교는 하지 않으며, `real_only`는 참고용 하한선으로만
+유지합니다.
 
 ## Repository Structure
 
@@ -85,7 +93,7 @@ python src/run_pipeline.py --config configs/pilot.yaml --download
 # 3. pilot 결과 확인
 python - <<'PY'
 import pandas as pd
-cols = ["experiment", "eval_split", "mAP50", "mAP50_95", "head_ap", "medium_ap", "tail_ap", "tail_ap_gain_vs_real_only", "synthetic_images"]
+cols = ["experiment", "eval_split", "mAP50", "mAP50_95", "head_ap", "medium_ap", "tail_ap", "tail_ap_gain_vs_basic_aug", "synthetic_images"]
 print(pd.read_csv("outputs_pilot/metrics/summary_by_experiment.csv")[cols].to_markdown(index=False, floatfmt=".4f"))
 PY
 
@@ -152,13 +160,21 @@ PY
 
 ## Experiment Groups
 
-- A. `real_only`: 원본 train split만 사용합니다.
-- B. `basic_aug`: 원본 데이터에 Ultralytics YOLO 기본 증강을 사용합니다.
-- C. `tail_oversampling`: selective synthetic budget과 같은 수만큼 tail-class image를 반복 추가합니다.
-- D. `uniform_tail_inpaint`: tail class마다 동일한 수의 inpainted synthetic image를 추가합니다.
-- E. `selective_tail_inpaint`: rarity와 baseline AP weakness를 결합한 priority score에 따라 synthetic budget을 배분합니다.
+- `real_only`: 기본 증강 OFF. 참고용 하한선.
+- `basic_aug`: Ultralytics YOLO 기본 증강 ON (mosaic/mixup 등). **주 baseline.**
+- `aug_oversample`: basic_aug + tail oversampling (selective budget과 동일 수량).
+- `aug_rfs`: basic_aug + Repeat Factor Sampling (Gupta et al. CVPR 2019, 데이터셋 수준 구현).
+- `aug_copy_paste`: basic_aug + tail Copy-Paste (Ghiasi et al. CVPR 2021; bbox 단위 rectangular paste).
+- `aug_uniform_inpaint`: basic_aug + uniform tail inpainting (= Li et al. ECCV 2024 재현군).
+- `aug_selective_inpaint`: basic_aug + selective tail inpainting (제안 기법, rarity×weakness priority).
+- `*_qf` 접미사: CLIPScore 하위 percentile 제거 + budget 재보충한 품질 필터링 ablation
+  (예: `aug_selective_inpaint_qf`).
 
-Validation/test split은 모든 실험군에서 동일하게 유지하고, train split만 변경합니다.
+`real_only`를 제외한 모든 variant는 Ultralytics 기본 증강을 켭니다. Validation/test split은
+모든 실험군에서 동일하게 유지하고, train split만 변경합니다. 파이프라인은 `real_only`와
+`basic_aug`를 먼저 학습한 뒤, `basic_aug`의 planning split(val) per-class AP로 selective plan의
+weakness score를 계산하고(`planning.baseline_variant`), 나머지 variant를 학습합니다. test AP는
+augmentation 계획에 누수되지 않습니다.
 
 ## Background Inpainting Method
 
@@ -174,8 +190,7 @@ VLM, CLIP, Grounding DINO, SAM 기반 필터링은 사용하지 않습니다. Di
 - Head AP, Medium AP, Tail AP
 - Macro AP
 - Head-Tail AP Gap
-- Tail AP gain vs `real_only`
-- Macro AP gain vs `real_only`
+- Tail/Macro AP gain vs `basic_aug` (주 지표) 및 vs `real_only` (참고)
 - AP gain per 100 synthetic images
 - AP gain per generated image
 - AP gain per training hour

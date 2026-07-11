@@ -27,11 +27,11 @@ def test_find_reusable_run_prefers_completed_run(tmp_path: Path) -> None:
 
 def test_find_reusable_run_returns_last_checkpoint_for_interrupted_run(tmp_path: Path) -> None:
     model = "yolov8n.pt"
-    prefix = run_name_prefix("selective_tail_inpaint", model, 43)
+    prefix = run_name_prefix("aug_selective_inpaint", model, 43)
     interrupted = tmp_path / f"{prefix}20260701_1400"
     _touch(interrupted / "weights" / "last.pt")
 
-    run_dir, checkpoint = find_reusable_run(tmp_path, "selective_tail_inpaint", model, 43)
+    run_dir, checkpoint = find_reusable_run(tmp_path, "aug_selective_inpaint", model, 43)
 
     assert run_dir == interrupted
     assert checkpoint == interrupted / "weights" / "last.pt"

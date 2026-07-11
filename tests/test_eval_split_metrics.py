@@ -57,18 +57,20 @@ def test_compute_long_tail_metrics_keeps_eval_split_separate(tmp_path: Path) -> 
     assert round(float(aug_test["tail_ap_gain_vs_real_only"]), 6) == 0.3
 
 
-def test_baseline_ap_for_planning_uses_requested_split_only() -> None:
+def test_baseline_ap_for_planning_uses_baseline_variant_and_split_only() -> None:
     per_class = pd.DataFrame(
         [
-            {"experiment": "real_only", "seed": 42, "eval_split": "val", "class_id": 1, "ap50_95": 0.20},
-            {"experiment": "real_only", "seed": 42, "eval_split": "test", "class_id": 1, "ap50_95": 0.80},
-            {"experiment": "selective_tail_inpaint", "seed": 42, "eval_split": "val", "class_id": 1, "ap50_95": 0.40},
+            {"experiment": "basic_aug", "seed": 42, "eval_split": "val", "class_id": 1, "ap50_95": 0.20},
+            {"experiment": "basic_aug", "seed": 42, "eval_split": "test", "class_id": 1, "ap50_95": 0.80},
+            {"experiment": "real_only", "seed": 42, "eval_split": "val", "class_id": 1, "ap50_95": 0.10},
+            {"experiment": "aug_selective_inpaint", "seed": 42, "eval_split": "val", "class_id": 1, "ap50_95": 0.40},
         ]
     )
 
     planning_ap = _baseline_ap_for_planning(per_class, "val")
 
     assert planning_ap is not None
+    assert planning_ap["experiment"].unique().tolist() == ["basic_aug"]
     assert planning_ap["eval_split"].unique().tolist() == ["val"]
     assert planning_ap["ap50_95"].tolist() == [0.20]
 
