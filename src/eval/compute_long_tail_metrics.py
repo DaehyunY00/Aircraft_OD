@@ -118,7 +118,18 @@ def compute_long_tail_metrics(
         synthetic_counts["aug_selective_inpaint"] = selective_count
         synthetic_counts["aug_oversample"] = selective_count
         synthetic_counts["aug_copy_paste"] = selective_count
-    summary["synthetic_images"] = summary["experiment"].map(synthetic_counts).fillna(0).astype(int)
+    def _synthetic_count(experiment: str) -> int:
+        if experiment in synthetic_counts:
+            return synthetic_counts[experiment]
+        try:
+            from src.utils.variants import parse_variant
+
+            # suffix variants (e.g. _qf) keep the base budget: filtering is refilled
+            return synthetic_counts.get(parse_variant(str(experiment)).base, 0)
+        except ValueError:
+            return 0
+
+    summary["synthetic_images"] = summary["experiment"].map(_synthetic_count).astype(int)
     denom = summary["synthetic_images"].astype(float).where(summary["synthetic_images"] > 0)
     # Budget-efficiency metrics measure the marginal tail gain over basic_aug.
     summary["ap_gain_per_100_synthetic_images"] = summary["tail_ap_gain_vs_basic_aug"] / denom * 100.0

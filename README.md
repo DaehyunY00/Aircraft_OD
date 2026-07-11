@@ -195,6 +195,13 @@ VLM, CLIP, Grounding DINO, SAM 기반 필터링은 사용하지 않습니다. Di
 - AP gain per generated image
 - AP gain per training hour
 
+생성품질 지표(`synthetic_quality.enabled`)는 클래스별 FID(합성 vs 해당 클래스 실제 train
+이미지), 이미지별 CLIPScore(프롬프트 정합)와 LPIPS를 `outputs*/synthetic/quality_report.csv`,
+`fid_by_class_<plan>.csv`로 저장합니다. `quality_filter.enabled`와 `aug_*_inpaint_qf` variant를
+함께 켜면 CLIPScore 하위 percentile을 제거하고 제거분만큼 추가 생성(재보충)해 budget을
+유지한 ablation을 돌릴 수 있습니다. Wilcoxon 검정과 seed CI는
+`outputs*/analysis/statistical_tests.{csv,md}`에 저장됩니다.
+
 ## Expected Outputs
 
 ```text

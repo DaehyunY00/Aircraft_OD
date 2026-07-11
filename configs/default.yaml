@@ -75,6 +75,16 @@ verification:
   compute_lpips: true                # LPIPS 기록 (torchmetrics/lpips 미설치 시 자동 생략)
   lpips_max_side: 512                # LPIPS 계산 전 리사이즈 상한 (CPU 속도)
 
+synthetic_quality:
+  enabled: false                     # 생성 후 CLIPScore/LPIPS 채점 + 클래스별 FID
+  max_images: 200                  # CPU 실행 시 채점 샘플 상한 (null=전체)
+  fid_feature_dim: 2048              # torchmetrics FID feature 차원
+
+quality_filter:
+  enabled: false                     # _qf variant용 CLIPScore percentile 필터링
+  clip_score_percentile: 50          # 하위 50% 제거
+  max_refill_rounds: 1               # 제거분 재보충 라운드 수 (P2: >1 라운드 확장 지점)
+
 experiments:
   variants:
     - real_only

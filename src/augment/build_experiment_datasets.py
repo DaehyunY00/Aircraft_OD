@@ -10,12 +10,13 @@ for _parent in Path(__file__).resolve().parents:
         sys.path.insert(0, str(_parent))
         break
 
+import pandas as pd
 import yaml
 from tqdm import tqdm
 
 from src.augment.oversample_tail import oversample_from_plan
 from src.utils.io import copy_or_symlink, ensure_dir, load_config
-from src.utils.variants import parse_variant
+from src.utils.variants import parse_variant, uses_synthetic_plan
 from src.utils.yolo import create_data_yaml, label_path_for_image, list_images, normalize_class_names
 
 
@@ -69,19 +70,36 @@ def add_synthetic_split(
     synthetic_root: Path,
     dest_root: Path,
     overwrite: bool = False,
+    include_names: set[str] | None = None,
 ) -> int:
+    """Link a synthetic plan's train images into a variant dataset.
+
+    include_names restricts to the given file names (quality filtering).
+    """
     images_dir = synthetic_root / "images" / "train"
     labels_dir = synthetic_root / "labels" / "train"
     if not images_dir.exists():
         return 0
     count = 0
     for image_path in tqdm(list_images(images_dir), desc=f"add synthetic {synthetic_root.name}"):
+        if include_names is not None and image_path.name not in include_names:
+            continue
         label_path = label_path_for_image(image_path, images_dir, labels_dir)
         copy_or_symlink(image_path, dest_root / "images" / "train" / image_path.name, overwrite=overwrite)
         if label_path.exists():
             copy_or_symlink(label_path, dest_root / "labels" / "train" / label_path.name, overwrite=overwrite)
         count += 1
     return count
+
+
+def quality_kept_names(quality_filter_csv: Path) -> set[str] | None:
+    """File names kept by the CLIPScore quality filter, or None when absent."""
+    if not quality_filter_csv.exists():
+        return None
+    df = pd.read_csv(quality_filter_csv)
+    if "kept" not in df.columns or "image" not in df.columns:
+        return None
+    return {Path(str(p)).name for p in df.loc[df["kept"].astype(bool), "image"]}
 
 
 def build_experiment_datasets(
@@ -93,6 +111,7 @@ def build_experiment_datasets(
     synthetic_root: str | Path | None = None,
     variants: list[str] | None = None,
     overwrite: bool = False,
+    quality_filter_dir: str | Path | None = None,
 ) -> dict[str, Path]:
     data = read_data_yaml(base_data_yaml)
     class_names = class_names or normalize_class_names(data.get("names"), data.get("nc"))
@@ -112,6 +131,7 @@ def build_experiment_datasets(
         copy_split(val_images, val_labels, variant_root, "val", overwrite=overwrite)
         copy_split(test_images, test_labels, variant_root, "test", overwrite=overwrite)
 
+        plan_name = uses_synthetic_plan(variant)
         if spec.base == "aug_oversample" and selective_plan:
             created = oversample_from_plan(
                 variant_root / "images" / "train",
@@ -122,11 +142,28 @@ def build_experiment_datasets(
                 overwrite=overwrite,
             )
             print(f"[INFO] {variant} 추가 샘플 수: {created}")
-        elif spec.base == "aug_uniform_inpaint":
-            added = add_synthetic_split(synthetic_root / "uniform", variant_root, overwrite=overwrite)
-            print(f"[INFO] {variant} synthetic 추가 수: {added}")
-        elif spec.base == "aug_selective_inpaint":
-            added = add_synthetic_split(synthetic_root / "selective", variant_root, overwrite=overwrite)
+        elif plan_name:
+            include: set[str] | None = None
+            if spec.quality_filter:
+                if quality_filter_dir is None:
+                    raise ValueError(
+                        f"{variant}: quality-filtered variant인데 quality_filter_dir가 없습니다. "
+                        "먼저 synthetic quality 채점(quality_filter.enabled)을 실행하세요."
+                    )
+                include = quality_kept_names(Path(quality_filter_dir) / f"quality_filter_{plan_name}.csv")
+                if include is None:
+                    raise FileNotFoundError(
+                        f"{variant}: {quality_filter_dir}/quality_filter_{plan_name}.csv가 없거나 "
+                        "kept 컬럼이 없습니다. 품질 채점/필터링 단계를 먼저 실행하세요."
+                    )
+            added = add_synthetic_split(
+                synthetic_root / plan_name, variant_root, overwrite=overwrite, include_names=include
+            )
+            if spec.quality_filter:
+                # budget refill: images regenerated to replace the filtered-out ones
+                added += add_synthetic_split(
+                    synthetic_root / f"{plan_name}_refill", variant_root, overwrite=overwrite
+                )
             print(f"[INFO] {variant} synthetic 추가 수: {added}")
 
         outputs[variant] = create_data_yaml(variant_root, class_names, variant_root / "data.yaml")

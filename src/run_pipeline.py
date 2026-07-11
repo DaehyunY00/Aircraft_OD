@@ -21,10 +21,17 @@ from src.eval.collect_yolo_metrics import collect_metrics
 from src.eval.compute_long_tail_metrics import compute_long_tail_metrics
 from src.eval.plot_results import plot_results
 from src.eval.statistics import run_statistical_tests
+from src.eval.synthetic_quality import (
+    compute_class_fid,
+    compute_quality_report,
+    plan_quality_filter,
+    quality_filter_config,
+    synthetic_quality_config,
+)
 from src.train.train_yolo import train_yolo
 from src.utils.io import ensure_dir, load_config, save_json
 from src.utils.timing import ProgressTimer, format_duration
-from src.utils.variants import uses_basic_aug
+from src.utils.variants import parse_variant, uses_basic_aug, uses_synthetic_plan
 
 
 def _best_weights(run_dir: Path) -> Path | None:
@@ -302,6 +309,57 @@ def run_pipeline(args: argparse.Namespace) -> None:
             )
             print(f"[시간] synthetic 생성 완료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
 
+        # Synthetic quality scoring (CLIPScore/LPIPS/FID) and optional
+        # CLIPScore-percentile filtering with budget refill for *_qf variants.
+        qf_cfg = quality_filter_config(cfg)
+        sq_cfg = synthetic_quality_config(cfg)
+        variants_list = cfg.get("experiments", {}).get("variants") or []
+        qf_plans = {uses_synthetic_plan(v) for v in variants_list if parse_variant(v).quality_filter}
+        qf_plans.discard(None)
+        if not args.skip_inpaint and not args.dry_run_inpaint and (sq_cfg["enabled"] or (qf_cfg["enabled"] and qf_plans)):
+            print(f"[시간] synthetic 품질 채점 시작 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
+            for plan_name in ("uniform", "selective"):
+                log_csv = outputs / "synthetic" / f"generation_log_{plan_name}.csv"
+                if not log_csv.exists():
+                    continue
+                need_filter = qf_cfg["enabled"] and plan_name in qf_plans
+                report_path = None
+                if sq_cfg["enabled"] or need_filter:
+                    report_path = compute_quality_report(
+                        log_csv, outputs, plan_name, cfg, max_images=sq_cfg["max_images"]
+                    )
+                if sq_cfg["enabled"]:
+                    compute_class_fid(log_csv, base_data_yaml, outputs, plan_name, cfg, max_images=sq_cfg["max_images"])
+                if need_filter and report_path is not None:
+                    filter_df, refill_plan = plan_quality_filter(
+                        pd.read_csv(report_path), plan_name, qf_cfg["clip_score_percentile"]
+                    )
+                    filter_path = outputs / "synthetic" / f"quality_filter_{plan_name}.csv"
+                    filter_df.to_csv(filter_path, index=False)
+                    kept = int(filter_df["kept"].sum()) if "kept" in filter_df.columns else len(filter_df)
+                    print(f"[INFO] 품질 필터 저장: {filter_path} (유지 {kept}장)")
+                    if not refill_plan.empty:
+                        refill_csv = outputs / "analysis" / f"augmentation_plan_{plan_name}_refill.csv"
+                        refill_plan.to_csv(refill_csv, index=False)
+                        print(
+                            f"[INFO] 품질 필터 budget 재보충 생성: {plan_name}_refill "
+                            f"({int(refill_plan['num_synthetic_images'].sum())}장)"
+                        )
+                        generate_from_plan(
+                            base_data_yaml,
+                            refill_csv,
+                            synthetic_root,
+                            outputs,
+                            cfg,
+                            plan_name=f"{plan_name}_refill",
+                            force=args.force,
+                        )
+                        refill_log = outputs / "synthetic" / f"generation_log_{plan_name}_refill.csv"
+                        if refill_log.exists():
+                            compute_quality_report(
+                                refill_log, outputs, f"{plan_name}_refill", cfg, max_images=sq_cfg["max_images"]
+                            )
+
         experiment_yamls = build_experiment_datasets(
             base_data_yaml,
             experiments_data,
@@ -310,6 +368,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             synthetic_root=synthetic_root,
             variants=cfg.get("experiments", {}).get("variants"),
             overwrite=args.force,
+            quality_filter_dir=outputs / "synthetic",
         )
         jobs = []
         for variant, data_yaml in experiment_yamls.items():

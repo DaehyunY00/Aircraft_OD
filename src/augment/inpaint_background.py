@@ -245,10 +245,15 @@ def generate_from_plan(
     for _, row in plan.iterrows():
         class_id = int(row["class_id"])
         needed = int(row.get("num_synthetic_images", 0))
+        # Refill plans (quality filtering) continue numbering after the initial
+        # budget so new images never collide with (or reuse the seeds of) the
+        # originally generated ones.
+        raw_start = row.get("start_index", 0)
+        start_index = int(raw_start) if pd.notna(raw_start) else 0
         sources = source_by_class.get(class_id, [])
         if needed <= 0 or not sources:
             continue
-        for idx in range(needed):
+        for idx in range(start_index, start_index + needed):
             source_image, source_label = sources[idx % len(sources)]
             prompt = prompts[idx % len(prompts)]
             attempt_seed = seed + class_id * 100_000 + idx
