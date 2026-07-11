@@ -125,6 +125,16 @@ GPU 없이 구조만 빠르게 검증할 때는 diffusion 대신 원본 복사�
 python src/run_pipeline.py --config configs/smoke.yaml --dry-run-inpaint
 ```
 
+**주의: `--dry-run-inpaint`는 파이프라인 구조 점검 전용입니다.** 생성물은 원본 사본이며
+학습/논문 실험에 사용하면 안 됩니다. dry-run은 plan 디렉터리에 `DRY_RUN_MARKER.txt`를
+남기고, 이후 실제 실행이 이 marker를 발견하면 해당 디렉터리 전체를 재생성합니다. 실제
+실행에서는 모든 생성물이 "배경이 임계 이상 바뀌었는지" 검증(`verification` config 섹션)을
+통과해야 train split에 포함됩니다.
+
+> **구버전 결과 폐기 공지**: `outputs_pilot_deprecated/`는 생성 검증 버그(BUGFIX_REPORT.md
+> 참고)가 수정되기 전의 pilot 산출물입니다. 증거 보존용으로만 남겨두며, 해당 결과는 전량
+> 폐기되었고 논문에 사용하지 않습니다.
+
 실험 실행 중에는 한글 시간 로그가 함께 출력됩니다. 파이프라인은 분석/생성/학습 작업 단위의 경과 시간과 예상 남은 시간을 출력하고, YOLO 학습은 epoch 단위 ETA를, inpainting 생성은 이미지 단위 ETA를 표시합니다.
 
 Colab 런타임이 끊겨도 weight와 metric을 보존하려면 config 파일의 `paths.outputs`를 Google Drive 경로로 바꾸세요. 터미널에 `outputs: ...`를 직접 입력하는 것이 아니라 YAML 파일을 수정해야 합니다. 예:

@@ -29,6 +29,74 @@ def mean_abs_diff(a: Image.Image, b: Image.Image) -> float:
     return float(np.mean(np.abs(arr_a - arr_b)))
 
 
+def boxes_mask(image_size: tuple[int, int], boxes: Sequence[tuple[int, int, int, int]]) -> np.ndarray:
+    """Boolean (H, W) mask that is True inside any of the given pixel boxes."""
+    width, height = image_size
+    mask = np.zeros((height, width), dtype=bool)
+    for x1, y1, x2, y2 in boxes:
+        x1 = max(0, min(width, int(x1)))
+        x2 = max(0, min(width, int(x2)))
+        y1 = max(0, min(height, int(y1)))
+        y2 = max(0, min(height, int(y2)))
+        if x2 > x1 and y2 > y1:
+            mask[y1:y2, x1:x2] = True
+    return mask
+
+
+def _aligned_arrays(a: Image.Image, b: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    if b.size != a.size:
+        b = b.resize(a.size)
+    arr_a = np.asarray(a.convert("RGB"), dtype=np.float32)
+    arr_b = np.asarray(b.convert("RGB"), dtype=np.float32)
+    return arr_a, arr_b
+
+
+def region_mean_abs_diff(
+    a: Image.Image,
+    b: Image.Image,
+    boxes: Sequence[tuple[int, int, int, int]],
+    inside: bool,
+) -> float:
+    """Mean absolute pixel diff restricted to the union of boxes (inside) or its complement."""
+    arr_a, arr_b = _aligned_arrays(a, b)
+    region = boxes_mask(a.size, boxes)
+    if not inside:
+        region = ~region
+    if not region.any():
+        return 0.0
+    return float(np.abs(arr_a - arr_b)[region].mean())
+
+
+def background_mean_abs_diff(
+    original: Image.Image,
+    generated: Image.Image,
+    protected_boxes: Sequence[tuple[int, int, int, int]],
+) -> float:
+    """Mean absolute pixel diff outside all protected boxes (the inpainted background)."""
+    return region_mean_abs_diff(original, generated, protected_boxes, inside=False)
+
+
+def bbox_interior_mean_abs_diff(
+    original: Image.Image,
+    generated: Image.Image,
+    boxes: Sequence[tuple[int, int, int, int]],
+) -> float:
+    """Mean absolute pixel diff inside the union of boxes (protected-object violation monitor)."""
+    return region_mean_abs_diff(original, generated, boxes, inside=True)
+
+
+def editable_background_ratio(
+    image_size: tuple[int, int],
+    protected_boxes: Sequence[tuple[int, int, int, int]],
+) -> float:
+    """Fraction of pixels outside all protected boxes. 0.0 means nothing can be inpainted."""
+    protected = boxes_mask(image_size, protected_boxes)
+    total = protected.size
+    if total == 0:
+        return 0.0
+    return float((~protected).sum() / total)
+
+
 def max_bbox_diff(original: Image.Image, generated: Image.Image, boxes: Sequence[tuple[int, int, int, int]]) -> float:
     if not boxes:
         return 0.0

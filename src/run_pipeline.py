@@ -255,6 +255,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
         synthetic_root = processed_data / "synthetic_inpaint"
         if not args.skip_inpaint:
+            if args.dry_run_inpaint:
+                print(
+                    "[WARN] --dry-run-inpaint: diffusion 없이 원본 사본을 생성합니다. "
+                    "파이프라인 구조 점검 전용이며, 이 상태의 synthetic으로 학습한 결과는 무효입니다."
+                )
             print(f"[시간] synthetic 생성 시작 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
             generate_from_plan(
                 base_data_yaml,

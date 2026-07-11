@@ -14,12 +14,38 @@ import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 
-from src.augment.masks import create_inpainting_mask
-from src.utils.image import is_nontrivial_image, load_rgb, max_bbox_diff, paste_protected_regions, save_contact_sheet
+from src.augment.masks import create_inpainting_mask, labels_to_pixel_boxes
+from src.utils.image import (
+    background_mean_abs_diff,
+    bbox_interior_mean_abs_diff,
+    editable_background_ratio,
+    is_nontrivial_image,
+    load_rgb,
+    max_bbox_diff,
+    paste_protected_regions,
+    save_contact_sheet,
+)
 from src.utils.io import copy_file, ensure_dir, load_config
 from src.utils.seed import set_seed
 from src.utils.timing import ProgressTimer
 from src.utils.yolo import label_path_for_image, list_images, read_yolo_labels
+
+DRY_RUN_MARKER_NAME = "DRY_RUN_MARKER.txt"
+
+
+def verification_config(config: dict[str, Any]) -> dict[str, float]:
+    """Read generation-verification thresholds from config with safe defaults."""
+    ver = config.get("verification", {}) or {}
+    diffusion = config.get("diffusion", {}) or {}
+    return {
+        "min_background_change": float(ver.get("min_background_change", 10.0)),
+        # JPEG(quality 95) round-trips alone produce ~1-3 mean abs diff inside the
+        # pasted bbox, so the protection monitor must sit above that noise floor.
+        "max_bbox_protected_change": float(ver.get("max_bbox_protected_change", 5.0)),
+        "min_editable_background_ratio": float(ver.get("min_editable_background_ratio", 0.05)),
+        "max_retries_per_image": int(ver.get("max_retries_per_image", diffusion.get("max_retries_per_image", 2))),
+        "max_failure_rate": float(ver.get("max_failure_rate", 0.05)),
+    }
 
 
 def _torch_dtype(name: str):
@@ -87,6 +113,67 @@ def collect_source_images_by_class(data_yaml: str | Path) -> dict[int, list[tupl
     return by_class
 
 
+def filter_sources_by_editable_ratio(
+    sources: list[tuple[Path, Path]],
+    padding_ratio: float,
+    min_editable_ratio: float,
+) -> tuple[list[tuple[Path, Path]], int]:
+    """Drop source images whose padded bboxes cover (almost) the whole frame.
+
+    For such images background inpainting is a geometric no-op: the mask protects
+    everything, diffusion cannot change anything, and the "synthetic" output is a
+    copy of the original. They must not consume generation budget.
+    """
+    eligible: list[tuple[Path, Path]] = []
+    skipped = 0
+    for image_path, label_path in sources:
+        try:
+            with Image.open(image_path) as image:
+                size = image.size
+            boxes = labels_to_pixel_boxes(read_yolo_labels(label_path), size, padding_ratio=padding_ratio)
+        except Exception:
+            skipped += 1
+            continue
+        if editable_background_ratio(size, boxes) >= min_editable_ratio:
+            eligible.append((image_path, label_path))
+        else:
+            skipped += 1
+    return eligible, skipped
+
+
+def verify_output_against_source(
+    original: Image.Image,
+    generated: Image.Image,
+    padded_boxes: list[tuple[int, int, int, int]],
+    ver_cfg: dict[str, float],
+) -> tuple[bool, dict[str, Any]]:
+    """Check that a synthetic image really changed the background and preserved the objects."""
+    background_diff = background_mean_abs_diff(original, generated, padded_boxes)
+    interior_diff = bbox_interior_mean_abs_diff(original, generated, padded_boxes)
+    size_ok = generated.size == original.size
+    nontrivial = is_nontrivial_image(generated)
+    background_ok = background_diff >= ver_cfg["min_background_change"]
+    protected_ok = interior_diff <= ver_cfg["max_bbox_protected_change"]
+    passed = bool(size_ok and nontrivial and background_ok and protected_ok)
+    reasons = []
+    if not background_ok:
+        reasons.append("background_unchanged")
+    if not protected_ok:
+        reasons.append("protected_region_changed")
+    if not size_ok:
+        reasons.append("size_mismatch")
+    if not nontrivial:
+        reasons.append("trivial_image")
+    return passed, {
+        "background_pixel_diff": background_diff,
+        "bbox_interior_pixel_diff": interior_diff,
+        "output_size_matches": size_ok,
+        "nontrivial_image": nontrivial,
+        "verification_passed": passed,
+        "verification_fail_reason": ";".join(reasons),
+    }
+
+
 def _run_inpaint(
     pipe,
     device: str,
@@ -102,7 +189,9 @@ def _run_inpaint(
     resolution = int(diffusion_cfg.get("resolution", 512))
     work_size = (resolution, resolution)
     work_image = image.resize(work_size, Image.Resampling.LANCZOS)
-    work_mask = mask.resize(work_size, Image.Resampling.LANCZOS)
+    # NEAREST keeps the mask binary: LANCZOS ringing plus the pipeline's 0.5
+    # binarization would erode the editable background band around each bbox.
+    work_mask = mask.resize(work_size, Image.Resampling.NEAREST)
     generator = torch.Generator(device=device).manual_seed(seed)
     result = pipe(
         prompt=prompt,
@@ -128,10 +217,22 @@ def generate_from_plan(
     dry_run: bool = False,
 ) -> Path:
     diffusion_cfg = config.get("diffusion", {})
+    ver_cfg = verification_config(config)
     seed = int(config.get("detector", {}).get("seeds", [42])[0])
     set_seed(seed)
     plan = pd.read_csv(plan_csv)
     source_by_class = collect_source_images_by_class(data_yaml)
+    padding_ratio = float(diffusion_cfg.get("mask_padding_ratio", 0.1))
+    for class_id, sources in list(source_by_class.items()):
+        eligible, skipped = filter_sources_by_editable_ratio(
+            sources, padding_ratio, ver_cfg["min_editable_background_ratio"]
+        )
+        if skipped:
+            print(
+                f"[WARN] class {class_id}: 배경 편집 가능 영역이 "
+                f"{ver_cfg['min_editable_background_ratio']:.0%} 미만인 source {skipped}장 제외"
+            )
+        source_by_class[class_id] = eligible
     out_root = Path(out_root)
     image_out_dir = ensure_dir(out_root / plan_name / "images" / "train")
     label_out_dir = ensure_dir(out_root / plan_name / "labels" / "train")
@@ -141,6 +242,26 @@ def generate_from_plan(
     canonical_rejected_dir = ensure_dir(out_root / "rejected") if plan_name == "selective" else None
     synthetic_dir = ensure_dir(Path(outputs) / "synthetic")
     debug_dir = ensure_dir(synthetic_dir / "debug_masks" / plan_name)
+
+    dry_run_marker = out_root / plan_name / DRY_RUN_MARKER_NAME
+    stale_from_dry_run = False
+    if dry_run:
+        print(
+            "[WARN] --dry-run-inpaint는 파이프라인 구조 점검 전용입니다. "
+            "synthetic 이미지는 원본 사본이며 학습/논문 실험에 사용하면 안 됩니다."
+        )
+        dry_run_marker.parent.mkdir(parents=True, exist_ok=True)
+        dry_run_marker.write_text(
+            "This plan directory was produced by --dry-run-inpaint (original copies, no diffusion).\n"
+            "A subsequent real run regenerates every file in this directory.\n",
+            encoding="utf-8",
+        )
+    elif dry_run_marker.exists():
+        stale_from_dry_run = True
+        print(
+            f"[WARN] {dry_run_marker}가 존재합니다. 이전 dry-run이 만든 원본 사본을 "
+            "정상 생성물로 재사용하지 않고 전체 재생성합니다."
+        )
 
     pipe = None
     device = "cpu"
@@ -176,40 +297,54 @@ def generate_from_plan(
             output_label = label_out_dir / output_image.with_suffix(".txt").name
             canonical_output_image = canonical_image_dir / output_name if canonical_image_dir else output_image
             canonical_output_label = canonical_label_dir / output_label.name if canonical_label_dir else output_label
-            if output_image.exists() and output_label.exists() and not force:
-                labels = read_yolo_labels(source_label)
-                if canonical_image_dir and not canonical_output_image.exists():
-                    copy_file(output_image, canonical_output_image, overwrite=True)
-                if canonical_label_dir and not canonical_output_label.exists():
-                    copy_file(output_label, canonical_output_label, overwrite=True)
-                label_count_output = len(read_yolo_labels(canonical_output_label)) if canonical_output_label.exists() else 0
-                logs.append(
-                    {
-                        "source_image": str(source_image),
-                        "output_image": str(canonical_output_image),
-                        "class_id": class_id,
-                        "class_name": row.get("class_name", f"class_{class_id}"),
-                        "prompt": prompt,
-                        "seed": attempt_seed,
-                        "accepted": True,
-                        "reject_reason": "already_exists",
-                        "bbox_pixel_diff": 0.0,
-                        "mask_padding": diffusion_cfg.get("mask_padding_ratio", 0.1),
-                        "inference_steps": diffusion_cfg.get("num_inference_steps", 20),
-                        "label_count_original": len(labels),
-                        "label_count_output": label_count_output,
-                        "label_sanity_ok": len(labels) == label_count_output,
-                        "output_exists": canonical_output_image.exists(),
-                        "output_size_matches": True,
-                        "nontrivial_image": True,
-                    }
-                )
-                timer.update()
-                image_bar.update(1)
-                image_bar.set_postfix_str(timer.status())
-                continue
             original = load_rgb(source_image)
             labels = read_yolo_labels(source_label)
+            if output_image.exists() and output_label.exists() and not force and not dry_run and not stale_from_dry_run:
+                # Resume path: never trust an existing file blindly — a stale
+                # dry-run copy or corrupt file must be regenerated, not laundered
+                # into the synthetic set.
+                existing = load_rgb(output_image)
+                existing_boxes = labels_to_pixel_boxes(labels, original.size, padding_ratio=padding_ratio)
+                verified, metrics = verify_output_against_source(original, existing, existing_boxes, ver_cfg)
+                if verified:
+                    if canonical_image_dir and not canonical_output_image.exists():
+                        copy_file(output_image, canonical_output_image, overwrite=True)
+                    if canonical_label_dir and not canonical_output_label.exists():
+                        copy_file(output_label, canonical_output_label, overwrite=True)
+                    label_count_output = len(read_yolo_labels(canonical_output_label)) if canonical_output_label.exists() else 0
+                    logs.append(
+                        {
+                            "source_image": str(source_image),
+                            "output_image": str(canonical_output_image),
+                            "class_id": class_id,
+                            "class_name": row.get("class_name", f"class_{class_id}"),
+                            "prompt": prompt,
+                            "seed": attempt_seed,
+                            "accepted": True,
+                            "reject_reason": "already_exists_verified",
+                            "dry_run": False,
+                            "bbox_pixel_diff": metrics["bbox_interior_pixel_diff"],
+                            "background_pixel_diff": metrics["background_pixel_diff"],
+                            "verification_passed": True,
+                            "verification_fail_reason": "",
+                            "mask_padding": padding_ratio,
+                            "inference_steps": diffusion_cfg.get("num_inference_steps", 20),
+                            "label_count_original": len(labels),
+                            "label_count_output": label_count_output,
+                            "label_sanity_ok": len(labels) == label_count_output,
+                            "output_exists": canonical_output_image.exists(),
+                            "output_size_matches": metrics["output_size_matches"],
+                            "nontrivial_image": metrics["nontrivial_image"],
+                        }
+                    )
+                    timer.update()
+                    image_bar.update(1)
+                    image_bar.set_postfix_str(timer.status())
+                    continue
+                print(
+                    f"[WARN] 기존 synthetic 파일이 검증에 실패해 재생성합니다: {output_image.name} "
+                    f"({metrics['verification_fail_reason']})"
+                )
             mask, padded_boxes, original_boxes = create_inpainting_mask(
                 original.size,
                 labels,
@@ -221,15 +356,26 @@ def generate_from_plan(
             accepted = False
             reject_reason = ""
             bbox_diff = 999.0
+            background_diff = 0.0
+            verification_passed = False
+            verification_fail_reason = ""
             generated = original.copy()
-            max_retries = int(diffusion_cfg.get("max_retries_per_image", 2))
-            for retry in range(max_retries + 1):
-                current_seed = attempt_seed + retry
-                try:
-                    if dry_run:
-                        generated = original.copy()
-                    else:
-                        generated = _run_inpaint(
+            max_retries = int(ver_cfg["max_retries_per_image"])
+            if dry_run:
+                # Structure-check only: the copy is written so downstream dataset
+                # wiring can be exercised, but it is explicitly marked as a
+                # non-verified dry-run artifact (and the plan dir carries a marker).
+                generated = original.copy()
+                accepted = True
+                reject_reason = "dry_run_copy"
+                bbox_diff = 0.0
+                background_diff = 0.0
+                verification_fail_reason = "dry_run"
+            else:
+                for retry in range(max_retries + 1):
+                    current_seed = attempt_seed + retry
+                    try:
+                        raw_generated = _run_inpaint(
                             pipe,
                             device,
                             original,
@@ -239,16 +385,28 @@ def generate_from_plan(
                             diffusion_cfg,
                             current_seed,
                         )
-                    generated = paste_protected_regions(original, generated, padded_boxes)
-                    bbox_diff = max_bbox_diff(original, generated, original_boxes)
-                    valid = generated.size == original.size and is_nontrivial_image(generated)
-                    accepted = valid and bbox_diff <= float(diffusion_cfg.get("bbox_diff_threshold", 18.0))
-                    reject_reason = "" if accepted else "bbox_or_image_quality_failed"
-                    if accepted:
-                        break
-                except Exception as exc:
-                    reject_reason = f"inpaint_error:{type(exc).__name__}:{exc}"
-                    accepted = False
+                        # Protection violations must be measured before the paste:
+                        # after paste_protected_regions the interior is original by
+                        # construction and any check on it is vacuous.
+                        bbox_diff = max_bbox_diff(original, raw_generated, original_boxes)
+                        generated = paste_protected_regions(original, raw_generated, padded_boxes)
+                        verification_passed, metrics = verify_output_against_source(
+                            original, generated, padded_boxes, ver_cfg
+                        )
+                        background_diff = metrics["background_pixel_diff"]
+                        verification_fail_reason = metrics["verification_fail_reason"]
+                        pre_paste_ok = bbox_diff <= float(diffusion_cfg.get("bbox_diff_threshold", 18.0))
+                        accepted = verification_passed and pre_paste_ok
+                        if not pre_paste_ok:
+                            verification_fail_reason = (
+                                verification_fail_reason + ";" if verification_fail_reason else ""
+                            ) + "pre_paste_bbox_diff_exceeded"
+                        reject_reason = "" if accepted else f"verification_failed:{verification_fail_reason}"
+                        if accepted:
+                            break
+                    except Exception as exc:
+                        reject_reason = f"inpaint_error:{type(exc).__name__}:{exc}"
+                        accepted = False
             if accepted:
                 generated.save(output_image, quality=95)
                 copy_file(source_label, output_label, overwrite=True)
@@ -263,6 +421,11 @@ def generate_from_plan(
                 generated.save(rejected_path, quality=90)
                 if canonical_rejected_dir:
                     copy_file(rejected_path, canonical_rejected_dir / output_name, overwrite=True)
+                # A rejected regeneration must also remove any stale file from the
+                # train split (e.g. a dry-run copy that failed re-verification).
+                for stale in (output_image, output_label, canonical_output_image, canonical_output_label):
+                    if stale is not None and stale.exists():
+                        stale.unlink()
             log_image = canonical_output_image if accepted else (canonical_rejected_dir / output_name if canonical_rejected_dir else rejected_dir / output_name)
             log_label = canonical_output_label if accepted else output_label
             label_count_output = len(read_yolo_labels(log_label)) if accepted and log_label.exists() else 0
@@ -287,8 +450,12 @@ def generate_from_plan(
                     "seed": attempt_seed,
                     "accepted": accepted,
                     "reject_reason": reject_reason,
+                    "dry_run": dry_run,
                     "bbox_pixel_diff": bbox_diff,
-                    "mask_padding": diffusion_cfg.get("mask_padding_ratio", 0.1),
+                    "background_pixel_diff": background_diff,
+                    "verification_passed": verification_passed,
+                    "verification_fail_reason": verification_fail_reason,
+                    "mask_padding": padding_ratio,
                     "inference_steps": diffusion_cfg.get("num_inference_steps", 20),
                     "label_count_original": len(labels),
                     "label_count_output": label_count_output,
@@ -302,6 +469,8 @@ def generate_from_plan(
             image_bar.update(1)
             image_bar.set_postfix_str(timer.status())
     image_bar.close()
+    if not dry_run and dry_run_marker.exists():
+        dry_run_marker.unlink()
     log_path = synthetic_dir / f"generation_log_{plan_name}.csv"
     pd.DataFrame(logs).to_csv(log_path, index=False)
     if plan_name == "selective":
