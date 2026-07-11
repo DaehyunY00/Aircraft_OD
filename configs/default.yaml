@@ -1,0 +1,66 @@
+paths:
+  root: "."
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  experiments_data: "data/experiments"
+  outputs: "outputs"
+
+kaggle:
+  dataset: "rookieengg/military-aircraft-detection-dataset-yolo-format"
+
+mode:
+  smoke_test: true
+  max_images_per_split: 200
+  max_classes: 8
+
+detector:
+  model: "yolov8n.pt"
+  imgsz: 416
+  epochs: 3
+  batch: 8
+  workers: 2
+  patience: 5
+  seeds: [42]
+
+eval:
+  split: "val"
+
+planning:
+  split: "val"
+
+tail:
+  method: "bottom_percent"
+  bottom_percent: 0.3
+  min_val_instances: 2
+
+selective_generation:
+  alpha: 0.6
+  total_synthetic_budget: 30
+  min_per_class: 2
+  max_per_class: 8
+
+diffusion:
+  model_id: "runwayml/stable-diffusion-inpainting"
+  torch_dtype: "float16"
+  num_inference_steps: 10
+  guidance_scale: 7.5
+  strength: 0.85
+  resolution: 512
+  mask_padding_ratio: 0.08
+  mask_blur_radius: 8
+  max_retries_per_image: 2
+  bbox_diff_threshold: 18.0
+  enable_attention_slicing: true
+  enable_xformers_if_available: true
+  prompts:
+    - "realistic sky background, natural lighting, aviation photography, high resolution, realistic clouds"
+    - "realistic runway background, military airbase, natural lighting, aviation photography"
+  negative_prompt: "deformed aircraft, changed aircraft shape, extra aircraft, duplicate aircraft, new aircraft, distorted object, text, watermark, low quality, blurry"
+
+experiments:
+  variants:
+    - real_only
+    - basic_aug
+    - tail_oversampling
+    - uniform_tail_inpaint
+    - selective_tail_inpaint

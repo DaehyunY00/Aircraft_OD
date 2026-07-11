@@ -1,0 +1,207 @@
+# Tail-Class Selective Background Inpainting Augmentation
+
+SCI급 연구 논문 작성을 목표로 한 long-tailed military aircraft detection 실험 코드베이스입니다. 핵심 가설은 tail class에만 bbox-protected diffusion background inpainting을 적용하면 tail AP가 개선되며, 같은 synthetic image budget에서 class frequency와 baseline AP를 함께 고려한 selective generation이 uniform tail generation보다 효율적이라는 것입니다.
+
+## Research Questions
+
+1. Tail class selective diffusion background inpainting은 real-only, YOLO 기본 증강, tail oversampling 대비 tail AP를 개선하는가?
+2. 같은 synthetic image budget에서 selective tail generation은 uniform tail generation보다 효율적인가?
+3. Tail AP 개선이 head-class AP 또는 overall mAP 손상 없이 가능한가?
+
+## Repository Structure
+
+```text
+configs/                 # smoke/full/default experiment configs
+notebooks/               # Colab experiment notebook
+src/data/                # Kaggle download, inspection, normalization, long-tail analysis
+src/augment/             # bbox mask, inpainting, oversampling, experiment dataset builder
+src/train/               # Ultralytics YOLO training
+src/eval/                # metric collection, long-tail metrics, plots
+src/utils/               # IO, YOLO bbox, image, seed utilities
+tests/                   # lightweight unit tests
+outputs/                 # local output placeholder
+```
+
+## Colab Setup
+
+```bash
+git clone <repo-url>
+cd military-aircraft-tail-inpainting
+pip install -r requirements.txt
+```
+
+Google Drive에 이미 저장소가 있다면 해당 폴더에서 바로 설치만 실행하면 됩니다.
+
+```bash
+cd /content/drive/MyDrive/Military_OD
+pip install -r requirements.txt
+```
+
+Kaggle credential 설정:
+
+```bash
+mkdir -p ~/.kaggle
+cp /content/kaggle.json ~/.kaggle/kaggle.json
+chmod 600 ~/.kaggle/kaggle.json
+```
+
+Dataset download:
+
+```bash
+python src/data/download_kaggle.py \
+  --dataset rookieengg/military-aircraft-detection-dataset-yolo-format \
+  --out /content/data/raw
+```
+
+Smoke test:
+
+```bash
+python src/run_pipeline.py --config configs/smoke.yaml
+```
+
+아직 `/content/data/raw`에 데이터셋이 없다면 다운로드까지 함께 실행합니다.
+
+```bash
+python src/run_pipeline.py --config configs/smoke.yaml --download
+```
+
+Full experiment:
+
+```bash
+python src/run_pipeline.py --config configs/full.yaml
+```
+
+## Recommended Experiment Protocol
+
+논문용 최종 test를 보기 전에, 먼저 validation-only pilot으로 가설을 점검하세요.
+
+```bash
+# 1. 빠른 구조 검증
+python src/run_pipeline.py --config configs/smoke.yaml --download
+
+# 2. 가설 검증용 pilot: validation split만 평가
+python src/run_pipeline.py --config configs/pilot.yaml --download
+
+# 3. pilot 결과 확인
+python - <<'PY'
+import pandas as pd
+cols = ["experiment", "eval_split", "mAP50", "mAP50_95", "head_ap", "medium_ap", "tail_ap", "tail_ap_gain_vs_real_only", "synthetic_images"]
+print(pd.read_csv("outputs_pilot/metrics/summary_by_experiment.csv")[cols].to_markdown(index=False, floatfmt=".4f"))
+PY
+
+# 4. 설정 고정 후 최종 full: test split 평가
+python src/run_pipeline.py --config configs/full.yaml --download
+```
+
+`configs/pilot.yaml`은 `eval.split: "val"`이고, `configs/full.yaml`은 `eval.split: "test"`입니다. Full mode에서도 selective generation 계획은 `planning.split: "val"`의 baseline AP만 사용하므로 test AP가 augmentation 계획에 누수되지 않습니다. 필요하면 명령줄에서 임시로 덮어쓸 수 있습니다.
+
+```bash
+python src/run_pipeline.py --config configs/pilot.yaml --eval-split val
+python src/run_pipeline.py --config configs/full.yaml --planning-split val --eval-split test
+python src/eval/collect_yolo_metrics.py --config configs/full.yaml --split test ...
+```
+
+중단된 Colab 세션을 이어갈 때:
+
+```bash
+python src/run_pipeline.py --config configs/full.yaml --download
+```
+
+기본값은 resume enabled입니다. 이미 정상 종료된 YOLO run은 재사용하고, 중간에 끊긴 run은 `outputs_full/runs/*/weights/last.pt`에서 이어 학습합니다. Synthetic image 생성도 이미 존재하는 파일은 건너뜁니다. 기존 checkpoint를 무시하고 새 학습 run을 만들 때만 다음 옵션을 사용하세요.
+
+```bash
+python src/run_pipeline.py --config configs/full.yaml --download --force-new-training
+```
+
+이미 synthetic image가 충분히 생성된 뒤 학습만 이어갈 때는:
+
+```bash
+python src/run_pipeline.py --config configs/full.yaml --only-train
+```
+
+GPU 없이 구조만 빠르게 검증할 때는 diffusion 대신 원본 복사본을 synthetic placeholder로 만드는 dry-run을 사용할 수 있습니다.
+
+```bash
+python src/run_pipeline.py --config configs/smoke.yaml --dry-run-inpaint
+```
+
+실험 실행 중에는 한글 시간 로그가 함께 출력됩니다. 파이프라인은 분석/생성/학습 작업 단위의 경과 시간과 예상 남은 시간을 출력하고, YOLO 학습은 epoch 단위 ETA를, inpainting 생성은 이미지 단위 ETA를 표시합니다.
+
+Colab 런타임이 끊겨도 weight와 metric을 보존하려면 config 파일의 `paths.outputs`를 Google Drive 경로로 바꾸세요. 터미널에 `outputs: ...`를 직접 입력하는 것이 아니라 YAML 파일을 수정해야 합니다. 예:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+path = Path('configs/smoke.yaml')
+text = path.read_text()
+text = text.replace('outputs: "/content/outputs"', 'outputs: "/content/drive/MyDrive/Military_OD/outputs"')
+path.write_text(text)
+PY
+```
+
+
+## Experiment Groups
+
+- A. `real_only`: 원본 train split만 사용합니다.
+- B. `basic_aug`: 원본 데이터에 Ultralytics YOLO 기본 증강을 사용합니다.
+- C. `tail_oversampling`: selective synthetic budget과 같은 수만큼 tail-class image를 반복 추가합니다.
+- D. `uniform_tail_inpaint`: tail class마다 동일한 수의 inpainted synthetic image를 추가합니다.
+- E. `selective_tail_inpaint`: rarity와 baseline AP weakness를 결합한 priority score에 따라 synthetic budget을 배분합니다.
+
+Validation/test split은 모든 실험군에서 동일하게 유지하고, train split만 변경합니다.
+
+## Background Inpainting Method
+
+YOLO label을 pixel bbox로 변환한 뒤 모든 객체 bbox를 보호 영역으로 설정합니다. Inpainting mask는 white=background edit, black=protected object로 저장되며, bbox padding과 mask blur를 적용합니다. Diffusion 생성 후 원본 bbox crop을 다시 붙이고, bbox crop mean absolute difference, label count, image validity를 검사합니다.
+
+VLM, CLIP, Grounding DINO, SAM 기반 필터링은 사용하지 않습니다. Diffusion model도 fine-tuning하지 않고 pretrained inpainting inference만 사용합니다.
+
+## Metrics
+
+주요 산출 metric은 다음과 같습니다.
+
+- overall mAP50, mAP50-95
+- Head AP, Medium AP, Tail AP
+- Macro AP
+- Head-Tail AP Gap
+- Tail AP gain vs `real_only`
+- Macro AP gain vs `real_only`
+- AP gain per 100 synthetic images
+- AP gain per generated image
+- AP gain per training hour
+
+## Expected Outputs
+
+```text
+/content/outputs/analysis/
+/content/outputs/metrics/
+/content/outputs/figures/
+/content/outputs/synthetic/
+/content/data/processed/base/
+/content/data/processed/synthetic_inpaint/
+/content/data/processed/synthetic_inpaint/images/train/
+/content/data/processed/synthetic_inpaint/labels/train/
+/content/data/experiments/
+```
+
+`outputs/analysis/dataset_summary.csv`에는 split별 이미지 수, bbox 수, 클래스 수, train imbalance ratio가 저장됩니다.
+
+## Tests
+
+실제 데이터셋 없이 빠르게 실행됩니다.
+
+```bash
+pytest tests/
+```
+
+## Troubleshooting
+
+- Kaggle download가 실패하면 `~/.kaggle/kaggle.json` 권한이 `600`인지 확인하세요.
+- `ModuleNotFoundError: No module named 'ultralytics'`가 나오면 `pip install -r requirements.txt`를 먼저 실행하세요.
+- Diffusion inference가 OOM이면 `configs/full.yaml`에서 `resolution`, `num_inference_steps`, synthetic budget을 낮추세요.
+- Colab compute unit이 부족하면 먼저 `configs/smoke.yaml`와 `--dry-run-inpaint`로 파이프라인 구조를 검증하세요.
+- Ultralytics API 변경으로 per-class AP 수집이 실패하면 `outputs/runs/*/results.csv` 기반 overall metric은 계속 저장되고, 경고 메시지가 출력됩니다.
+
+## Ethical Use Statement
+
+This project is limited to academic analysis of long-tailed object detection and annotation-preserving data augmentation using public datasets. It is not intended for operational surveillance, targeting, weapon-system integration, or real-time military deployment.

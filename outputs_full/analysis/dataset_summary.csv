@@ -1,0 +1,2 @@
+num_images_train,num_images_val,num_images_test,num_images_total,num_classes,total_bboxes_train,total_bboxes_val,total_bboxes_test,total_bboxes,imbalance_ratio_train
+9430,1179,1179,11788,43,15116,1885,1831,18832,10.488372093023257

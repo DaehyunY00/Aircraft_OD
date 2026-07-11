@@ -1,0 +1,16 @@
+ultralytics
+kaggle
+diffusers
+transformers
+accelerate
+safetensors
+opencv-python
+pillow
+numpy
+pandas
+matplotlib
+pyyaml
+tqdm
+scikit-learn
+imagehash
+pytest
