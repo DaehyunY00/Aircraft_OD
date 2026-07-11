@@ -14,3 +14,5 @@ tqdm
 scikit-learn
 imagehash
 pytest
+scipy
+torchmetrics

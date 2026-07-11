@@ -16,8 +16,6 @@ from tqdm import tqdm
 
 from src.augment.masks import create_inpainting_mask, labels_to_pixel_boxes
 from src.utils.image import (
-    background_mean_abs_diff,
-    bbox_interior_mean_abs_diff,
     editable_background_ratio,
     is_nontrivial_image,
     load_rgb,
@@ -25,27 +23,19 @@ from src.utils.image import (
     paste_protected_regions,
     save_contact_sheet,
 )
+from src.eval.verify_generation import (
+    enforce_failure_rate,
+    make_lpips_scorer,
+    update_verification_report,
+    verification_config,
+    verify_pair,
+)
 from src.utils.io import copy_file, ensure_dir, load_config
 from src.utils.seed import set_seed
 from src.utils.timing import ProgressTimer
 from src.utils.yolo import label_path_for_image, list_images, read_yolo_labels
 
 DRY_RUN_MARKER_NAME = "DRY_RUN_MARKER.txt"
-
-
-def verification_config(config: dict[str, Any]) -> dict[str, float]:
-    """Read generation-verification thresholds from config with safe defaults."""
-    ver = config.get("verification", {}) or {}
-    diffusion = config.get("diffusion", {}) or {}
-    return {
-        "min_background_change": float(ver.get("min_background_change", 10.0)),
-        # JPEG(quality 95) round-trips alone produce ~1-3 mean abs diff inside the
-        # pasted bbox, so the protection monitor must sit above that noise floor.
-        "max_bbox_protected_change": float(ver.get("max_bbox_protected_change", 5.0)),
-        "min_editable_background_ratio": float(ver.get("min_editable_background_ratio", 0.05)),
-        "max_retries_per_image": int(ver.get("max_retries_per_image", diffusion.get("max_retries_per_image", 2))),
-        "max_failure_rate": float(ver.get("max_failure_rate", 0.05)),
-    }
 
 
 def _torch_dtype(name: str):
@@ -141,39 +131,6 @@ def filter_sources_by_editable_ratio(
     return eligible, skipped
 
 
-def verify_output_against_source(
-    original: Image.Image,
-    generated: Image.Image,
-    padded_boxes: list[tuple[int, int, int, int]],
-    ver_cfg: dict[str, float],
-) -> tuple[bool, dict[str, Any]]:
-    """Check that a synthetic image really changed the background and preserved the objects."""
-    background_diff = background_mean_abs_diff(original, generated, padded_boxes)
-    interior_diff = bbox_interior_mean_abs_diff(original, generated, padded_boxes)
-    size_ok = generated.size == original.size
-    nontrivial = is_nontrivial_image(generated)
-    background_ok = background_diff >= ver_cfg["min_background_change"]
-    protected_ok = interior_diff <= ver_cfg["max_bbox_protected_change"]
-    passed = bool(size_ok and nontrivial and background_ok and protected_ok)
-    reasons = []
-    if not background_ok:
-        reasons.append("background_unchanged")
-    if not protected_ok:
-        reasons.append("protected_region_changed")
-    if not size_ok:
-        reasons.append("size_mismatch")
-    if not nontrivial:
-        reasons.append("trivial_image")
-    return passed, {
-        "background_pixel_diff": background_diff,
-        "bbox_interior_pixel_diff": interior_diff,
-        "output_size_matches": size_ok,
-        "nontrivial_image": nontrivial,
-        "verification_passed": passed,
-        "verification_fail_reason": ";".join(reasons),
-    }
-
-
 def _run_inpaint(
     pipe,
     device: str,
@@ -265,8 +222,11 @@ def generate_from_plan(
 
     pipe = None
     device = "cpu"
+    lpips_fn = None
     if not dry_run:
         pipe, device = load_inpaint_pipeline(diffusion_cfg)
+        if ver_cfg["compute_lpips"]:
+            lpips_fn = make_lpips_scorer(ver_cfg["lpips_max_side"])
 
     prompts = diffusion_cfg.get("prompts") or ["realistic sky background, aviation photography"]
     negative_prompt = diffusion_cfg.get("negative_prompt", "")
@@ -305,7 +265,7 @@ def generate_from_plan(
                 # into the synthetic set.
                 existing = load_rgb(output_image)
                 existing_boxes = labels_to_pixel_boxes(labels, original.size, padding_ratio=padding_ratio)
-                verified, metrics = verify_output_against_source(original, existing, existing_boxes, ver_cfg)
+                verified, metrics = verify_pair(original, existing, existing_boxes, ver_cfg, lpips_fn=lpips_fn)
                 if verified:
                     if canonical_image_dir and not canonical_output_image.exists():
                         copy_file(output_image, canonical_output_image, overwrite=True)
@@ -325,6 +285,8 @@ def generate_from_plan(
                             "dry_run": False,
                             "bbox_pixel_diff": metrics["bbox_interior_pixel_diff"],
                             "background_pixel_diff": metrics["background_pixel_diff"],
+                            "background_ssim": metrics["background_ssim"],
+                            "lpips": metrics["lpips"],
                             "verification_passed": True,
                             "verification_fail_reason": "",
                             "mask_padding": padding_ratio,
@@ -357,6 +319,8 @@ def generate_from_plan(
             reject_reason = ""
             bbox_diff = 999.0
             background_diff = 0.0
+            background_ssim_value = None
+            lpips_value = None
             verification_passed = False
             verification_fail_reason = ""
             generated = original.copy()
@@ -390,10 +354,12 @@ def generate_from_plan(
                         # construction and any check on it is vacuous.
                         bbox_diff = max_bbox_diff(original, raw_generated, original_boxes)
                         generated = paste_protected_regions(original, raw_generated, padded_boxes)
-                        verification_passed, metrics = verify_output_against_source(
-                            original, generated, padded_boxes, ver_cfg
+                        verification_passed, metrics = verify_pair(
+                            original, generated, padded_boxes, ver_cfg, lpips_fn=lpips_fn
                         )
                         background_diff = metrics["background_pixel_diff"]
+                        background_ssim_value = metrics["background_ssim"]
+                        lpips_value = metrics["lpips"]
                         verification_fail_reason = metrics["verification_fail_reason"]
                         pre_paste_ok = bbox_diff <= float(diffusion_cfg.get("bbox_diff_threshold", 18.0))
                         accepted = verification_passed and pre_paste_ok
@@ -453,6 +419,8 @@ def generate_from_plan(
                     "dry_run": dry_run,
                     "bbox_pixel_diff": bbox_diff,
                     "background_pixel_diff": background_diff,
+                    "background_ssim": background_ssim_value,
+                    "lpips": lpips_value,
                     "verification_passed": verification_passed,
                     "verification_fail_reason": verification_fail_reason,
                     "mask_padding": padding_ratio,
@@ -471,13 +439,37 @@ def generate_from_plan(
     image_bar.close()
     if not dry_run and dry_run_marker.exists():
         dry_run_marker.unlink()
+    log_df = pd.DataFrame(logs)
     log_path = synthetic_dir / f"generation_log_{plan_name}.csv"
-    pd.DataFrame(logs).to_csv(log_path, index=False)
+    log_df.to_csv(log_path, index=False)
     if plan_name == "selective":
-        pd.DataFrame(logs).to_csv(synthetic_dir / "generation_log.csv", index=False)
+        log_df.to_csv(synthetic_dir / "generation_log.csv", index=False)
     if contact_rows:
         save_contact_sheet(contact_rows, synthetic_dir / f"review_sheet_{plan_name}.jpg", labels=["original", "mask", "generated"])
     print(f"[INFO] 생성 로그 저장: {log_path}")
+    report_columns = [
+        "source_image",
+        "output_image",
+        "class_id",
+        "class_name",
+        "prompt",
+        "seed",
+        "accepted",
+        "background_pixel_diff",
+        "background_ssim",
+        "lpips",
+        "bbox_pixel_diff",
+        "verification_passed",
+        "verification_fail_reason",
+        "dry_run",
+    ]
+    if not log_df.empty:
+        report_rows = log_df[[c for c in report_columns if c in log_df.columns]].to_dict("records")
+        report_path = update_verification_report(outputs, plan_name, report_rows)
+        print(f"[INFO] verification report 저장: {report_path}")
+    if not dry_run:
+        failure_rate = enforce_failure_rate(log_df, ver_cfg["max_failure_rate"], plan_name)
+        print(f"[INFO] 생성 검증 실패율: {failure_rate:.1%} (허용 한도 {ver_cfg['max_failure_rate']:.1%})")
     return log_path
 
 

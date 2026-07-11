@@ -64,6 +64,8 @@ verification:
   min_editable_background_ratio: 0.05  # 편집 가능 배경 비율이 이 값 미만인 source는 제외
   max_retries_per_image: 2           # 검증 실패 시 이미지당 재시도 횟수
   max_failure_rate: 0.05             # 전체 실패율이 이를 초과하면 파이프라인 중단
+  compute_lpips: true                # LPIPS 기록 (torchmetrics/lpips 미설치 시 자동 생략)
+  lpips_max_side: 512                # LPIPS 계산 전 리사이즈 상한 (CPU 속도)
 
 experiments:
   variants:
