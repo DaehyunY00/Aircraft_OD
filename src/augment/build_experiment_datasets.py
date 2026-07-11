@@ -14,7 +14,9 @@ import pandas as pd
 import yaml
 from tqdm import tqdm
 
+from src.augment.copy_paste_tail import copy_paste_from_plan
 from src.augment.oversample_tail import oversample_from_plan
+from src.augment.repeat_factor_sampling import apply_rfs, rfs_config
 from src.utils.io import copy_or_symlink, ensure_dir, load_config
 from src.utils.variants import parse_variant, uses_synthetic_plan
 from src.utils.yolo import create_data_yaml, label_path_for_image, list_images, normalize_class_names
@@ -112,6 +114,7 @@ def build_experiment_datasets(
     variants: list[str] | None = None,
     overwrite: bool = False,
     quality_filter_dir: str | Path | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     data = read_data_yaml(base_data_yaml)
     class_names = class_names or normalize_class_names(data.get("names"), data.get("nc"))
@@ -132,7 +135,31 @@ def build_experiment_datasets(
         copy_split(test_images, test_labels, variant_root, "test", overwrite=overwrite)
 
         plan_name = uses_synthetic_plan(variant)
-        if spec.base == "aug_oversample" and selective_plan:
+        seed = int((config or {}).get("detector", {}).get("seeds", [42])[0])
+        if spec.base == "aug_copy_paste" and selective_plan:
+            created = copy_paste_from_plan(
+                variant_root / "images" / "train",
+                variant_root / "labels" / "train",
+                selective_plan,
+                variant_root / "images" / "train",
+                variant_root / "labels" / "train",
+                config=config,
+                seed=seed,
+                overwrite=overwrite,
+            )
+            print(f"[INFO] {variant} 추가 샘플 수: {created}")
+        elif spec.base == "aug_rfs":
+            created = apply_rfs(
+                variant_root / "images" / "train",
+                variant_root / "labels" / "train",
+                variant_root / "images" / "train",
+                variant_root / "labels" / "train",
+                threshold=rfs_config(config or {})["threshold"],
+                seed=seed,
+                overwrite=overwrite,
+            )
+            print(f"[INFO] {variant} RFS 복제 수: {created}")
+        elif spec.base == "aug_oversample" and selective_plan:
             created = oversample_from_plan(
                 variant_root / "images" / "train",
                 variant_root / "labels" / "train",
@@ -193,6 +220,7 @@ def main() -> None:
         synthetic_root=args.synthetic_root,
         variants=cfg.get("experiments", {}).get("variants"),
         overwrite=args.overwrite,
+        config=cfg,
     )
 
 

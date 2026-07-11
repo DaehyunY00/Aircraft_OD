@@ -88,10 +88,21 @@ quality_filter:
   clip_score_percentile: 50          # 하위 50% 제거
   max_refill_rounds: 1               # 제거분 재보충 라운드 수 (P2: >1 라운드 확장 지점)
 
+copy_paste:
+  scale_jitter: [0.5, 1.5]           # 붙여넣기 patch 스케일 jitter 범위
+  horizontal_flip_prob: 0.5
+  max_paste_attempts: 10             # 기존 bbox와 겹침 회피 배치 시도 횟수
+  max_overlap_iou: 0.3               # 기존 bbox와 허용 최대 IoU
+
+rfs:
+  threshold: 0.01                    # r(c)=max(1, sqrt(t/f(c))) — LVIS t=0.001, 소규모셋 상향
+
 experiments:
   variants:
     - real_only
     - basic_aug
     - aug_oversample
+    - aug_rfs
+    - aug_copy_paste
     - aug_uniform_inpaint
     - aug_selective_inpaint

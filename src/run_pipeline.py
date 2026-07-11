@@ -369,6 +369,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             variants=cfg.get("experiments", {}).get("variants"),
             overwrite=args.force,
             quality_filter_dir=outputs / "synthetic",
+            config=cfg,
         )
         jobs = []
         for variant, data_yaml in experiment_yamls.items():

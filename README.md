@@ -170,6 +170,13 @@ PY
 - `*_qf` 접미사: CLIPScore 하위 percentile 제거 + budget 재보충한 품질 필터링 ablation
   (예: `aug_selective_inpaint_qf`).
 
+**Copy-Paste 한계**: 이 데이터셋에는 segmentation mask가 없어 `aug_copy_paste`는 Ghiasi et
+al.의 mask 단위 cutout이 아니라 **bbox 단위 rectangular patch**를 붙입니다. 붙여넣은 patch가
+원본 배경 직사각형을 함께 가져오는 한계가 있으며, 논문에 명시해야 합니다. budget은
+selective plan과 동일하게 맞춰 공정 비교합니다. `aug_rfs`는 Ultralytics에 sampler 주입이
+어려워 repeat factor `r(c)=max(1, sqrt(t/f(c)))`를 이미지 복제로 물질화한 데이터셋 수준
+구현입니다(`rfs.threshold`).
+
 `real_only`를 제외한 모든 variant는 Ultralytics 기본 증강을 켭니다. Validation/test split은
 모든 실험군에서 동일하게 유지하고, train split만 변경합니다. 파이프라인은 `real_only`와
 `basic_aug`를 먼저 학습한 뒤, `basic_aug`의 planning split(val) per-class AP로 selective plan의

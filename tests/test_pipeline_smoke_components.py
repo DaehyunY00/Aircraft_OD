@@ -69,11 +69,14 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
             "prompts": ["sky"],
             "negative_prompt": "bad",
         },
+        "rfs": {"threshold": 0.5},
         "experiments": {
             "variants": [
                 "real_only",
                 "basic_aug",
                 "aug_oversample",
+                "aug_rfs",
+                "aug_copy_paste",
                 "aug_uniform_inpaint",
                 "aug_selective_inpaint",
             ]
@@ -94,6 +97,7 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
         selective_plan=selective_plan,
         synthetic_root=synthetic_root,
         variants=config["experiments"]["variants"],
+        config=config,
     )
 
     assert (outputs / "analysis" / "dataset_summary.csv").exists()
