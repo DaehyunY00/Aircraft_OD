@@ -324,12 +324,27 @@ def run_pipeline(args: argparse.Namespace) -> None:
                     continue
                 need_filter = qf_cfg["enabled"] and plan_name in qf_plans
                 report_path = None
+                # Diagnostic scoring is best-effort: a metric-backend failure
+                # (e.g. torchmetrics/transformers mismatch) must never abort the
+                # experiment (generation/training/eval).
                 if sq_cfg["enabled"] or need_filter:
-                    report_path = compute_quality_report(
-                        log_csv, outputs, plan_name, cfg, max_images=sq_cfg["max_images"]
-                    )
+                    try:
+                        report_path = compute_quality_report(
+                            log_csv, outputs, plan_name, cfg, max_images=sq_cfg["max_images"]
+                        )
+                    except Exception as exc:
+                        print(f"[WARN] 품질 리포트 채점 실패(진단 단계, 실험은 계속): {exc}")
                 if sq_cfg["enabled"]:
-                    compute_class_fid(log_csv, base_data_yaml, outputs, plan_name, cfg, max_images=sq_cfg["max_images"])
+                    try:
+                        compute_class_fid(log_csv, base_data_yaml, outputs, plan_name, cfg, max_images=sq_cfg["max_images"])
+                    except Exception as exc:
+                        print(f"[WARN] FID 채점 실패(진단 단계, 실험은 계속): {exc}")
+                if need_filter and report_path is None:
+                    raise RuntimeError(
+                        f"{plan_name}: 품질 필터가 필요한 _qf variant인데 CLIPScore 채점에 실패해 "
+                        "필터 기준을 만들 수 없습니다. torchmetrics/transformers 버전을 맞추거나 "
+                        "quality_filter.enabled를 끄세요."
+                    )
                 if need_filter and report_path is not None:
                     filter_df, refill_plan = plan_quality_filter(
                         pd.read_csv(report_path), plan_name, qf_cfg["clip_score_percentile"]

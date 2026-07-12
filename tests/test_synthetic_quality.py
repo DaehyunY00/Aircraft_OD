@@ -71,6 +71,27 @@ def test_quality_report_schema_and_merge(tmp_path: Path) -> None:
     assert len(pd.read_csv(report_path)) == 4
 
 
+def test_quality_report_tolerates_unavailable_scorers(tmp_path: Path) -> None:
+    # When a metric backend is unavailable/incompatible, its scorer yields None
+    # (or is None); the report is still written with empty metric columns and no
+    # exception — quality scoring never blocks the experiment.
+    plan_root = tmp_path / "synthetic" / "selective"
+    names = [f"img_{i:02d}.jpg" for i in range(3)]
+    _write_dummy_images(plan_root, names)
+    log_path = _generation_log(tmp_path, plan_root, names)
+    outputs = tmp_path / "outputs"
+
+    report_path = compute_quality_report(
+        log_path, outputs, "selective", config={},
+        clip_scorer=lambda image, prompt: None,  # simulates version-incompatible CLIPScore
+        lpips_fn=None,                            # simulates missing LPIPS backend
+    )
+    report = pd.read_csv(report_path)
+    assert len(report) == 3
+    assert report["clip_score"].isna().all()
+    assert report["lpips"].isna().all()
+
+
 def test_plan_quality_filter_drops_bottom_percentile_and_builds_refill() -> None:
     report = pd.DataFrame(
         [

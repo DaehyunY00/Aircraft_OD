@@ -57,24 +57,44 @@ def synthetic_quality_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_clip_scorer(model_name: str = "openai/clip-vit-base-patch16") -> ClipScorer | None:
-    """CLIPScore(prompt, image) scorer via torchmetrics; None when unavailable."""
+    """CLIPScore(prompt, image) scorer via torchmetrics; None when unavailable.
+
+    Per-call failures (e.g. torchmetrics/transformers version mismatch) degrade
+    to None with a one-time warning instead of crashing the pipeline: quality
+    scoring is a diagnostic, never a gate on the experiment.
+    """
     try:
         import torch
         from torchmetrics.multimodal.clip_score import CLIPScore
 
         metric = CLIPScore(model_name_or_path=model_name)
         metric.eval()
+    except Exception as exc:
+        print(f"[WARN] torchmetrics CLIPScore를 사용할 수 없어 clip_score는 기록하지 않습니다: {exc}")
+        return None
 
-        def scorer(image: Image.Image, prompt: str) -> float | None:
-            arr = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    warned = {"done": False}
+
+    def scorer(image: Image.Image, prompt: str) -> float | None:
+        try:
+            import torch
+
+            # np.array (not asarray) yields a writable copy: torch.from_numpy on a
+            # read-only PIL view otherwise warns about undefined behavior.
+            arr = np.array(image.convert("RGB"), dtype=np.uint8)
             tensor = torch.from_numpy(arr).permute(2, 0, 1)
             with torch.no_grad():
                 return float(metric(tensor, prompt))
+        except Exception as exc:
+            if not warned["done"]:
+                print(
+                    "[WARN] CLIPScore 계산 실패(torchmetrics/transformers 버전 비호환 가능). "
+                    f"clip_score는 비워둡니다: {exc}"
+                )
+                warned["done"] = True
+            return None
 
-        return scorer
-    except Exception:
-        print("[WARN] torchmetrics CLIPScore를 사용할 수 없어 clip_score는 기록하지 않습니다.")
-        return None
+    return scorer
 
 
 def compute_quality_report(
@@ -172,8 +192,20 @@ def compute_class_fid(
         batch = []
         for path in selected:
             image = load_rgb(path).resize((299, 299))
-            batch.append(torch.from_numpy(np.asarray(image, dtype=np.uint8)).permute(2, 0, 1))
+            # np.array (copy) -> writable, avoids torch non-writable-tensor warning
+            batch.append(torch.from_numpy(np.array(image, dtype=np.uint8)).permute(2, 0, 1))
         return torch.stack(batch) if batch else None
+
+    def _fid(real_paths: list[Path], fake_paths: list[Path]) -> float | None:
+        # Best-effort: a torchmetrics/version failure must not crash the pipeline.
+        try:
+            metric = FrechetInceptionDistance(feature=sq_cfg["fid_feature_dim"], normalize=False)
+            metric.update(_tensor_batch(real_paths, max_images), real=True)
+            metric.update(_tensor_batch(fake_paths, max_images), real=False)
+            return float(metric.compute())
+        except Exception as exc:
+            print(f"[WARN] FID 계산 실패 — 해당 항목은 비워둡니다: {exc}")
+            return None
 
     rows: list[dict[str, Any]] = []
     all_real: list[Path] = []
@@ -185,12 +217,7 @@ def compute_class_fid(
         all_fake.extend(fake_paths)
         fid_value = None
         if len(fake_paths) >= 2 and len(real_paths) >= 2:
-            metric = FrechetInceptionDistance(feature=sq_cfg["fid_feature_dim"], normalize=False)
-            real_batch = _tensor_batch(real_paths, max_images)
-            fake_batch = _tensor_batch(fake_paths, max_images)
-            metric.update(real_batch, real=True)
-            metric.update(fake_batch, real=False)
-            fid_value = float(metric.compute())
+            fid_value = _fid(real_paths, fake_paths)
         rows.append(
             {
                 "class_id": int(class_id),
@@ -201,16 +228,13 @@ def compute_class_fid(
             }
         )
     if len(all_fake) >= 2 and len(all_real) >= 2:
-        metric = FrechetInceptionDistance(feature=sq_cfg["fid_feature_dim"], normalize=False)
-        metric.update(_tensor_batch(sorted(set(all_real)), max_images), real=True)
-        metric.update(_tensor_batch(all_fake, max_images), real=False)
         rows.append(
             {
                 "class_id": -1,
                 "class_name": "__overall__",
                 "n_real": len(set(all_real)),
                 "n_synthetic": len(all_fake),
-                "fid": float(metric.compute()),
+                "fid": _fid(sorted(set(all_real)), all_fake),
             }
         )
     pd.DataFrame(rows).to_csv(fid_path, index=False)

@@ -99,7 +99,7 @@ def make_lpips_scorer(max_side: int = 512) -> LpipsFn | None:
 
     Tries torchmetrics first, then the standalone `lpips` package.
     """
-    scorer = None
+    raw_scorer = None
     try:
         import torch
         from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -107,7 +107,7 @@ def make_lpips_scorer(max_side: int = 512) -> LpipsFn | None:
         metric = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True)
         metric.eval()
 
-        def scorer(a: Image.Image, b: Image.Image) -> float | None:  # type: ignore[misc]
+        def raw_scorer(a: Image.Image, b: Image.Image) -> float:  # type: ignore[misc]
             ta, tb = (_to_lpips_tensor(img, max_side) for img in (a, b))
             with torch.no_grad():
                 return float(metric(ta, tb))
@@ -120,7 +120,7 @@ def make_lpips_scorer(max_side: int = 512) -> LpipsFn | None:
             net = lpips_pkg.LPIPS(net="alex")
             net.eval()
 
-            def scorer(a: Image.Image, b: Image.Image) -> float | None:  # type: ignore[misc]
+            def raw_scorer(a: Image.Image, b: Image.Image) -> float:  # type: ignore[misc]
                 ta, tb = (_to_lpips_tensor(img, max_side) * 2.0 - 1.0 for img in (a, b))
                 with torch.no_grad():
                     return float(net(ta, tb))
@@ -128,6 +128,19 @@ def make_lpips_scorer(max_side: int = 512) -> LpipsFn | None:
         except Exception:
             print("[WARN] LPIPS backend(torchmetrics/lpips)가 없어 LPIPS는 기록하지 않습니다.")
             return None
+
+    # Per-call failures degrade to None (quality metric, never a pipeline gate).
+    warned = {"done": False}
+
+    def scorer(a: Image.Image, b: Image.Image) -> float | None:
+        try:
+            return raw_scorer(a, b)
+        except Exception as exc:
+            if not warned["done"]:
+                print(f"[WARN] LPIPS 계산 실패 — lpips는 비워둡니다: {exc}")
+                warned["done"] = True
+            return None
+
     return scorer
 
 
@@ -137,7 +150,7 @@ def _to_lpips_tensor(image: Image.Image, max_side: int):
     if max(image.size) > max_side:
         scale = max_side / max(image.size)
         image = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
-    arr = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    arr = np.array(image.convert("RGB"), dtype=np.float32) / 255.0  # writable copy
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
 
 
