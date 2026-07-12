@@ -4,8 +4,14 @@ __pycache__/
 .ipynb_checkpoints/
 
 data/
+# Generated experiment outputs (weights, synthetic images, debug masks, figures,
+# metric/quality CSVs) live in Google Drive, not git. Curate a results snapshot
+# deliberately if needed — do not commit whole run directories.
 outputs/*
 !outputs/.gitkeep
+outputs_pilot/
+outputs_full/
+outputs_pilot_deprecated/
 
 runs/
 *.pt
