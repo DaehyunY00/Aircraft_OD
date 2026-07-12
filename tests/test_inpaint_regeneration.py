@@ -28,6 +28,7 @@ def _config() -> dict:
             "min_editable_background_ratio": 0.05,
             "max_retries_per_image": 1,
             "max_failure_rate": 1.0,
+            "budget_attempt_multiplier": 3,
         },
     }
 
@@ -129,6 +130,42 @@ def test_stale_original_copies_are_not_reused(env: dict, monkeypatch: pytest.Mon
     assert log["reject_reason"].str.startswith("verification_failed").all()
     assert list((env["synthetic"] / "uniform" / "images" / "train").glob("*.jpg")) == []
     assert len(list((env["synthetic"] / "uniform" / "rejected").glob("*.jpg"))) > 0
+
+
+def test_budget_refill_reaches_target_when_some_attempts_fail(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Half the attempts fail verification; the budget loop must refill from
+    # further indices until `needed` (2) images are actually accepted.
+    env["config"]["verification"]["max_retries_per_image"] = 0  # one gen call per attempt
+    calls = {"n": 0}
+
+    def flaky(pipe, device, image, mask, prompt, negative_prompt, diffusion_cfg, seed):
+        calls["n"] += 1
+        if calls["n"] % 2 == 1:  # odd attempts: unchanged background -> fails
+            return image.copy()
+        return _fake_background_inpaint(pipe, device, image, mask, prompt, negative_prompt, diffusion_cfg, seed)
+
+    monkeypatch.setattr(ib, "_run_inpaint", flaky)
+    ib.generate_from_plan(
+        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+        plan_name="uniform", dry_run=False,
+    )
+    log = _log(env)
+    assert int(log["accepted"].astype(bool).sum()) == 2  # budget met despite failures
+    assert len(log[~log["accepted"].astype(bool)]) > 0   # some attempts did fail
+    assert len(list((env["synthetic"] / "uniform" / "images" / "train").glob("*.jpg"))) == 2
+
+
+def test_budget_loop_is_capped_when_all_attempts_fail(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    env["config"]["verification"]["max_retries_per_image"] = 0
+    monkeypatch.setattr(ib, "_run_inpaint", _noop_inpaint)
+    ib.generate_from_plan(
+        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+        plan_name="uniform", dry_run=False,
+    )
+    log = _log(env)
+    assert not bool(log["accepted"].any())
+    # needed=2, budget_attempt_multiplier=3 -> capped at 6 attempts (no infinite loop)
+    assert len(log) == 6
 
 
 def test_noop_generation_is_rejected_and_removed_from_train(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:

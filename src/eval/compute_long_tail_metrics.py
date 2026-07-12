@@ -108,14 +108,38 @@ def compute_long_tail_metrics(
             on=keys,
             how="left",
         )
+    synthetic_dir = outputs / "synthetic"
+
+    def _plan_budget(plan_csv: Path) -> int:
+        return int(pd.read_csv(plan_csv)["num_synthetic_images"].sum()) if plan_csv.exists() else 0
+
+    def _realized_inpaint(plan_name: str) -> int | None:
+        """Actual accepted synthetic images for an inpaint plan (incl. refill).
+
+        Reported instead of the plan budget so the same-budget comparison and the
+        per-image efficiency metrics use the images that truly reached training.
+        """
+        total = None
+        for log_name in (f"generation_log_{plan_name}.csv", f"generation_log_{plan_name}_refill.csv"):
+            log_path = synthetic_dir / log_name
+            if not log_path.exists():
+                continue
+            log = pd.read_csv(log_path)
+            if "accepted" not in log.columns:
+                continue
+            realized = log[~log.get("dry_run", False).astype(bool)] if "dry_run" in log.columns else log
+            total = (total or 0) + int(realized["accepted"].astype(bool).sum())
+        return total
+
     synthetic_counts = {"real_only": 0, "basic_aug": 0}
     uniform_plan = analysis_dir / "augmentation_plan_uniform.csv"
     selective_plan = analysis_dir / "augmentation_plan_selective.csv"
-    if uniform_plan.exists():
-        synthetic_counts["aug_uniform_inpaint"] = int(pd.read_csv(uniform_plan)["num_synthetic_images"].sum())
+    # Inpaint variants: realized accepted count (falls back to plan budget).
+    synthetic_counts["aug_uniform_inpaint"] = _realized_inpaint("uniform") or _plan_budget(uniform_plan)
+    synthetic_counts["aug_selective_inpaint"] = _realized_inpaint("selective") or _plan_budget(selective_plan)
+    # oversample/copy_paste hit their budget deterministically (no verification).
     if selective_plan.exists():
-        selective_count = int(pd.read_csv(selective_plan)["num_synthetic_images"].sum())
-        synthetic_counts["aug_selective_inpaint"] = selective_count
+        selective_count = _plan_budget(selective_plan)
         synthetic_counts["aug_oversample"] = selective_count
         synthetic_counts["aug_copy_paste"] = selective_count
     def _synthetic_count(experiment: str) -> int:

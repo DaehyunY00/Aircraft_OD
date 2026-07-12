@@ -1,0 +1,7 @@
+class_id,class_name,n_real,n_synthetic,fid
+1,A400M,39,18,
+2,AG600,34,18,
+7,Be200,40,20,
+13,E7,16,18,
+15,F117,32,19,
+-1,__overall__,161,93,

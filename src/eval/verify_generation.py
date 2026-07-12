@@ -58,6 +58,10 @@ def verification_config(config: dict[str, Any]) -> dict[str, Any]:
         "min_editable_background_ratio": float(ver.get("min_editable_background_ratio", 0.05)),
         "max_retries_per_image": int(ver.get("max_retries_per_image", diffusion.get("max_retries_per_image", 2))),
         "max_failure_rate": float(ver.get("max_failure_rate", 0.05)),
+        # Refill rejected images from other sources until the planned budget is met,
+        # capped at needed * budget_attempt_multiplier attempts per class, so every
+        # tail variant is compared at the same realized budget.
+        "budget_attempt_multiplier": float(ver.get("budget_attempt_multiplier", 2.0)),
         "compute_lpips": bool(ver.get("compute_lpips", True)),
         "lpips_max_side": int(ver.get("lpips_max_side", 512)),
     }

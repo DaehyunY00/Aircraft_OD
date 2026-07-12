@@ -74,6 +74,7 @@ verification:
   min_editable_background_ratio: 0.05  # 편집 가능 배경 비율이 이 값 미만인 source는 제외
   max_retries_per_image: 2           # 검증 실패 시 이미지당 재시도 횟수
   max_failure_rate: 0.5              # 과반(>50%) 실패 = diffusion 오작동으로 간주해 중단. 정상 QC 탈락은 rejected/로 격리되고 학습 미사용
+  budget_attempt_multiplier: 2       # 검증 탈락분을 다른 소스로 재보충. 클래스당 최대 needed×이 값 만큼 시도해 목표 budget을 실제로 채움
   compute_lpips: true                # LPIPS 기록 (torchmetrics/lpips 미설치 시 자동 생략)
   lpips_max_side: 512                # LPIPS 계산 전 리사이즈 상한 (CPU 속도)
 
@@ -94,7 +95,7 @@ copy_paste:
   max_overlap_iou: 0.3               # 기존 bbox와 허용 최대 IoU
 
 rfs:
-  threshold: 0.01                    # r(c)=max(1, sqrt(t/f(c))) — LVIS t=0.001, 소규모셋 상향
+  threshold: 0.1                     # r(c)=max(1, sqrt(t/f(c))). 0.01은 이 데이터셋(최소 freq~0.02)에서 no-op이라 상향
 
 experiments:
   variants:

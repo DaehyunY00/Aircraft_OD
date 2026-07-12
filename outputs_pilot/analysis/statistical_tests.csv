@@ -1,0 +1,5 @@
+variant_a,variant_b,n_classes,mean_diff,median_diff,statistic,p_value,scope,eval_split
+aug_selective_inpaint,aug_uniform_inpaint,16,0.005612494916912099,-0.00534516595109686,60.0,0.705718994140625,all,val
+aug_selective_inpaint,aug_uniform_inpaint,5,0.0004954957463607038,-0.0019319258128928929,7.0,1.0,tail,val
+aug_selective_inpaint,basic_aug,16,0.01971731853004849,0.0014621477068637485,55.0,0.528167724609375,all,val
+aug_selective_inpaint,basic_aug,5,0.022374725856460338,0.0478481840266679,6.0,0.8125,tail,val

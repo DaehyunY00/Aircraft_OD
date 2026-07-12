@@ -253,7 +253,15 @@ def generate_from_plan(
         sources = source_by_class.get(class_id, [])
         if needed <= 0 or not sources:
             continue
-        for idx in range(start_index, start_index + needed):
+        # Budget-based generation: keep advancing the index (new source + seed)
+        # until `needed` images pass verification, so verification rejects are
+        # refilled and every tail variant lands at the same realized budget.
+        accepted_count = 0
+        max_attempts = max(needed, int(round(needed * ver_cfg["budget_attempt_multiplier"])))
+        for attempt in range(max_attempts):
+            if accepted_count >= needed:
+                break
+            idx = start_index + attempt
             source_image, source_label = sources[idx % len(sources)]
             prompt = prompts[idx % len(prompts)]
             attempt_seed = seed + class_id * 100_000 + idx
@@ -304,6 +312,7 @@ def generate_from_plan(
                             "nontrivial_image": metrics["nontrivial_image"],
                         }
                     )
+                    accepted_count += 1
                     timer.update()
                     image_bar.update(1)
                     image_bar.set_postfix_str(timer.status())
@@ -385,6 +394,7 @@ def generate_from_plan(
                         reject_reason = f"inpaint_error:{type(exc).__name__}:{exc}"
                         accepted = False
             if accepted:
+                accepted_count += 1
                 generated.save(output_image, quality=95)
                 copy_file(source_label, output_label, overwrite=True)
                 if canonical_image_dir:
@@ -447,6 +457,12 @@ def generate_from_plan(
             timer.update()
             image_bar.update(1)
             image_bar.set_postfix_str(timer.status())
+        if accepted_count < needed:
+            print(
+                f"[WARN] class {class_id}: 목표 budget {needed}장 중 {accepted_count}장만 검증 통과 "
+                f"({max_attempts}회 시도 소진). 소스 다양성 부족/배경 여지 부족 가능. "
+                "verification.budget_attempt_multiplier를 올리거나 소스를 늘리세요."
+            )
     image_bar.close()
     if not dry_run and dry_run_marker.exists():
         dry_run_marker.unlink()

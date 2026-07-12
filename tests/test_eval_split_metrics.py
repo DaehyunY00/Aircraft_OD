@@ -57,6 +57,48 @@ def test_compute_long_tail_metrics_keeps_eval_split_separate(tmp_path: Path) -> 
     assert round(float(aug_test["tail_ap_gain_vs_real_only"]), 6) == 0.3
 
 
+def test_synthetic_images_reports_realized_not_planned_count(tmp_path: Path) -> None:
+    metrics_dir = tmp_path / "metrics"
+    analysis_dir = tmp_path / "analysis"
+    synthetic_dir = tmp_path / "synthetic"
+    for d in (metrics_dir, analysis_dir, synthetic_dir):
+        d.mkdir(parents=True)
+
+    raw = pd.DataFrame(
+        [
+            {"experiment": "basic_aug", "seed": 42, "eval_split": "val", "mAP50": 0.2, "mAP50_95": 0.2, "training_seconds": 10},
+            {"experiment": "aug_selective_inpaint", "seed": 42, "eval_split": "val", "mAP50": 0.3, "mAP50_95": 0.3, "training_seconds": 10},
+        ]
+    )
+    per_class = pd.DataFrame(
+        [
+            {"experiment": "basic_aug", "seed": 42, "eval_split": "val", "class_id": 1, "class_name": "tail", "ap50_95": 0.2},
+            {"experiment": "aug_selective_inpaint", "seed": 42, "eval_split": "val", "class_id": 1, "class_name": "tail", "ap50_95": 0.3},
+        ]
+    )
+    groups = pd.DataFrame([{"class_id": 1, "class_name": "tail", "group": "tail", "instance_count": 10}])
+    raw.to_csv(metrics_dir / "raw_yolo_metrics.csv", index=False)
+    per_class.to_csv(metrics_dir / "per_class_ap.csv", index=False)
+    groups.to_csv(analysis_dir / "class_groups.csv", index=False)
+    # plan budget says 5, but only 3 images actually passed verification
+    pd.DataFrame([{"class_id": 1, "class_name": "tail", "num_synthetic_images": 5}]).to_csv(
+        analysis_dir / "augmentation_plan_selective.csv", index=False
+    )
+    pd.DataFrame(
+        [{"accepted": a, "dry_run": False} for a in [True, True, True, False, False]]
+    ).to_csv(synthetic_dir / "generation_log_selective.csv", index=False)
+
+    summary_path, _ = compute_long_tail_metrics(
+        metrics_dir / "raw_yolo_metrics.csv",
+        metrics_dir / "per_class_ap.csv",
+        analysis_dir / "class_groups.csv",
+        tmp_path,
+    )
+    summary = pd.read_csv(summary_path)
+    realized = summary[summary["experiment"] == "aug_selective_inpaint"]["synthetic_images"].iloc[0]
+    assert int(realized) == 3  # realized accepted, not the planned budget of 5
+
+
 def test_baseline_ap_for_planning_uses_baseline_variant_and_split_only() -> None:
     per_class = pd.DataFrame(
         [
