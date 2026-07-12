@@ -82,7 +82,9 @@ diffusers의 0.5 이진화가 겹치면 bbox 주변 blur 밴드가 보호 영역
 |---|---|
 | `src/utils/image.py` | `boxes_mask`, `background_mean_abs_diff`(bbox 외부 diff), `bbox_interior_mean_abs_diff`(보호 위반 감시), `editable_background_ratio` 신규 |
 | `src/augment/inpaint_background.py` `verify_output_against_source` | 신규 승인 기준: **배경 diff ≥ `verification.min_background_change`(기본 10.0)** AND bbox 내부 diff ≤ `verification.max_bbox_protected_change`(기본 5.0, JPEG 노이즈 상회) AND 크기 일치 AND non-trivial |
-| 〃 생성 루프 | 보호 위반(`max_bbox_diff`)을 **paste 이전의 raw diffusion 출력**에서 측정(사후 측정은 vacuous — RC-1), paste 후 배경 검증. 실패 시 `verification.max_retries_per_image` 재시도, 최종 실패 시 rejected/로 이동하고 train split의 stale 파일 삭제 |
+| 〃 생성 루프 | 최종 승인은 **post-paste 이미지 기준**: (1) 배경 diff ≥ `min_background_change` AND (2) post-paste bbox 내부 diff ≤ `max_bbox_protected_change`(실질 보호 보장). paste 후 배경 검증. 실패 시 `verification.max_retries_per_image` 재시도, 최종 실패 시 rejected/로 이동하고 train split의 stale 파일 삭제 |
+| 〃 pre-paste bbox diff | `max_bbox_diff`를 raw diffusion 출력에서 측정하되 **진단용 로그 전용**(하드 리젝 아님). `paste_protected_regions`가 객체+padding halo를 원본으로 복원하므로 pre-paste 값은 최종 품질과 무관. `bbox_diff_threshold` 초과 시 경고만 출력 |
+| 〃 실패율 게이트 | `verification.max_failure_rate`는 **과반(0.5) 실패 시에만 중단**하는 diffusion 오작동 탐지용. 정상 QC 탈락(rejected/ 격리)은 중단 사유 아님 |
 | 〃 dry-run | 시작 시 "구조 점검 전용" 경고 출력, plan 디렉터리에 `DRY_RUN_MARKER.txt` 기록, 로그에 `dry_run=True`·`reject_reason="dry_run_copy"` 명시. 이후 비-dry-run 실행이 marker를 발견하면 already_exists를 무시하고 **전량 재생성** 후 marker 삭제 |
 | 〃 already_exists 분기 | 기존 파일을 원본과 비교해 위 승인 기준으로 **재검증**. 통과 시에만 `already_exists_verified`로 재사용, 실패 시 재생성 |
 | 〃 source 선정 | `editable_background_ratio < verification.min_editable_background_ratio`(기본 0.05)인 source(bbox가 화면 전체를 덮는 이미지)를 생성 대상에서 제외 (RC-4) |

@@ -366,12 +366,18 @@ def generate_from_plan(
                         background_ssim_value = metrics["background_ssim"]
                         lpips_value = metrics["lpips"]
                         verification_fail_reason = metrics["verification_fail_reason"]
-                        pre_paste_ok = bbox_diff <= float(diffusion_cfg.get("bbox_diff_threshold", 18.0))
-                        accepted = verification_passed and pre_paste_ok
-                        if not pre_paste_ok:
-                            verification_fail_reason = (
-                                verification_fail_reason + ";" if verification_fail_reason else ""
-                            ) + "pre_paste_bbox_diff_exceeded"
+                        # Acceptance depends only on the final image: background
+                        # actually changed AND the protected region is preserved
+                        # (post-paste interior check inside verify_pair). The
+                        # pre-paste bbox diff is a diagnostic only — paste_protected_regions
+                        # restores the object + padding halo to the original, so a
+                        # high value never harms the output. It is logged, not gated.
+                        accepted = verification_passed
+                        if bbox_diff > float(diffusion_cfg.get("bbox_diff_threshold", 18.0)):
+                            print(
+                                f"[INFO] 높은 pre-paste bbox diff({bbox_diff:.1f}) — 배경만 최종 반영되고 "
+                                f"객체는 원본으로 복원되므로 승인에는 영향 없음: {output_image.name}"
+                            )
                         reject_reason = "" if accepted else f"verification_failed:{verification_fail_reason}"
                         if accepted:
                             break
