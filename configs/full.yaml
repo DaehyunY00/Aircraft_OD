@@ -81,7 +81,7 @@ verification:
 
 synthetic_quality:
   enabled: true                     # 생성 후 CLIPScore/LPIPS 채점 + 클래스별 FID
-  max_images: null                  # CPU 실행 시 채점 샘플 상한 (null=전체)
+  max_images: 200                   # 품질 채점 샘플 상한 (CPU FID/LPIPS는 전체 처리가 비현실적). 전량은 오프라인 CLI로
   fid_feature_dim: 2048              # torchmetrics FID feature 차원
 
 quality_filter:
