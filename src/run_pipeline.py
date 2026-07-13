@@ -279,7 +279,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
             outputs,
         )
 
-        synthetic_root = processed_data / "synthetic_inpaint"
+        # synthetic_data가 설정되면(권장: Drive 경로) 세션이 끊겨도 생성물이 보존되어
+        # 재시작 시 전량 재생성을 피한다. 미설정 시 기존 processed_data 하위(휘발성).
+        synthetic_root = Path(cfg["paths"].get("synthetic_data") or (processed_data / "synthetic_inpaint"))
+        ensure_dir(synthetic_root)
         if not args.skip_inpaint:
             if args.dry_run_inpaint:
                 print(
@@ -385,6 +388,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             overwrite=args.force,
             quality_filter_dir=outputs / "synthetic",
             config=cfg,
+            generation_log_dir=outputs / "synthetic",
         )
         jobs = []
         for variant, data_yaml in experiment_yamls.items():

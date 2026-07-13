@@ -104,6 +104,30 @@ def quality_kept_names(quality_filter_csv: Path) -> set[str] | None:
     return {Path(str(p)).name for p in df.loc[df["kept"].astype(bool), "image"]}
 
 
+def accepted_names_from_logs(generation_log_dir: Path, plan_name: str) -> set[str] | None:
+    """Accepted output-image names from the current generation logs (plan + refill).
+
+    Plan allocations can shrink between runs (e.g. a max_per_class change): files
+    from an older, larger allocation then linger in the plan directory. Copying
+    only what the current log accepted keeps the realized budget equal to the
+    plan and immune to stale leftovers. Returns None when no log exists
+    (dataset built outside the pipeline).
+    """
+    names: set[str] = set()
+    found = False
+    for log_name in (f"generation_log_{plan_name}.csv", f"generation_log_{plan_name}_refill.csv"):
+        log_path = generation_log_dir / log_name
+        if not log_path.exists():
+            continue
+        log = pd.read_csv(log_path)
+        if "accepted" not in log.columns or "output_image" not in log.columns:
+            continue
+        found = True
+        accepted = log[log["accepted"].astype(bool)]
+        names |= {Path(str(p)).name for p in accepted["output_image"]}
+    return names if found else None
+
+
 def build_experiment_datasets(
     base_data_yaml: str | Path,
     experiments_root: str | Path,
@@ -115,6 +139,7 @@ def build_experiment_datasets(
     overwrite: bool = False,
     quality_filter_dir: str | Path | None = None,
     config: dict[str, Any] | None = None,
+    generation_log_dir: str | Path | None = None,
 ) -> dict[str, Path]:
     data = read_data_yaml(base_data_yaml)
     class_names = class_names or normalize_class_names(data.get("names"), data.get("nc"))
@@ -170,26 +195,41 @@ def build_experiment_datasets(
             )
             print(f"[INFO] {variant} 추가 샘플 수: {created}")
         elif plan_name:
-            include: set[str] | None = None
+            log_names = (
+                accepted_names_from_logs(Path(generation_log_dir), plan_name)
+                if generation_log_dir is not None
+                else None
+            )
+            include: set[str] | None = log_names
             if spec.quality_filter:
                 if quality_filter_dir is None:
                     raise ValueError(
                         f"{variant}: quality-filtered variant인데 quality_filter_dir가 없습니다. "
                         "먼저 synthetic quality 채점(quality_filter.enabled)을 실행하세요."
                     )
-                include = quality_kept_names(Path(quality_filter_dir) / f"quality_filter_{plan_name}.csv")
-                if include is None:
+                kept = quality_kept_names(Path(quality_filter_dir) / f"quality_filter_{plan_name}.csv")
+                if kept is None:
                     raise FileNotFoundError(
                         f"{variant}: {quality_filter_dir}/quality_filter_{plan_name}.csv가 없거나 "
                         "kept 컬럼이 없습니다. 품질 채점/필터링 단계를 먼저 실행하세요."
                     )
+                include = kept if include is None else {name for name in include if name in kept}
             added = add_synthetic_split(
                 synthetic_root / plan_name, variant_root, overwrite=overwrite, include_names=include
             )
             if spec.quality_filter:
                 # budget refill: images regenerated to replace the filtered-out ones
                 added += add_synthetic_split(
-                    synthetic_root / f"{plan_name}_refill", variant_root, overwrite=overwrite
+                    synthetic_root / f"{plan_name}_refill", variant_root, overwrite=overwrite,
+                    include_names=log_names,
+                )
+            if added == 0:
+                # Training an inpaint variant on base-only data silently equals
+                # basic_aug and corrupts the comparison — refuse instead.
+                raise RuntimeError(
+                    f"{variant}: synthetic 이미지가 0장 추가됐습니다 ({synthetic_root / plan_name}). "
+                    "세션 재시작으로 생성물이 사라졌을 수 있습니다. --skip-inpaint 없이 재실행해 "
+                    "생성부터 다시 하거나, paths.synthetic_data를 Drive 경로로 설정해 보존하세요."
                 )
             print(f"[INFO] {variant} synthetic 추가 수: {added}")
 

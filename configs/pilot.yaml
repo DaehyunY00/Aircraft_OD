@@ -3,6 +3,7 @@ paths:
   raw_data: "/content/data/raw"
   processed_data: "/content/data/processed_pilot"
   experiments_data: "/content/data/experiments_pilot"
+  synthetic_data: null               # null이면 processed_data/synthetic_inpaint (휘발성)
   outputs: "/content/drive/MyDrive/Military_OD/outputs_pilot"
 
 kaggle:

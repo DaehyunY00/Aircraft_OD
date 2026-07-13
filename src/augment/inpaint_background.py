@@ -517,7 +517,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     processed = Path(cfg["paths"]["processed_data"])
-    out = args.out or processed / "synthetic_inpaint"
+    out = args.out or cfg["paths"].get("synthetic_data") or processed / "synthetic_inpaint"
     outputs = args.outputs or cfg["paths"]["outputs"]
     generate_from_plan(args.data, args.plan, out, outputs, cfg, plan_name=args.plan_name, force=args.force, dry_run=args.dry_run)
 

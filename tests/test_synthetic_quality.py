@@ -7,7 +7,11 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from src.augment.build_experiment_datasets import add_synthetic_split, quality_kept_names
+from src.augment.build_experiment_datasets import (
+    accepted_names_from_logs,
+    add_synthetic_split,
+    quality_kept_names,
+)
 from src.eval.synthetic_quality import (
     compute_quality_report,
     plan_quality_filter,
@@ -143,6 +147,34 @@ def test_quality_kept_names_and_filtered_dataset_build(tmp_path: Path) -> None:
         "img_03.jpg",
         "refill_00.jpg",
     ]
+
+
+def test_accepted_names_from_logs_excludes_stale_leftovers(tmp_path: Path) -> None:
+    # Plan dir holds 3 files but the current log only accepted 2 (e.g. the plan
+    # shrank after a max_per_class change): only logged-accepted names count.
+    plan_root = tmp_path / "synthetic" / "selective"
+    names = ["keep_a.jpg", "keep_b.jpg", "stale_c.jpg"]
+    _write_dummy_images(plan_root, names)
+    log_dir = tmp_path / "outputs" / "synthetic"
+    log_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"output_image": str(plan_root / "images" / "train" / "keep_a.jpg"), "accepted": True},
+            {"output_image": str(plan_root / "images" / "train" / "keep_b.jpg"), "accepted": True},
+            {"output_image": str(plan_root / "images" / "train" / "rejected_d.jpg"), "accepted": False},
+        ]
+    ).to_csv(log_dir / "generation_log_selective.csv", index=False)
+    pd.DataFrame(
+        [{"output_image": str(plan_root / "images" / "train" / "refill_e.jpg"), "accepted": True}]
+    ).to_csv(log_dir / "generation_log_selective_refill.csv", index=False)
+
+    include = accepted_names_from_logs(log_dir, "selective")
+    assert include == {"keep_a.jpg", "keep_b.jpg", "refill_e.jpg"}
+
+    dest = tmp_path / "variant"
+    added = add_synthetic_split(plan_root, dest, include_names=include)
+    assert added == 2  # stale_c excluded, rejected_d/refill_e not in this dir
+    assert accepted_names_from_logs(log_dir, "uniform") is None  # no log -> None
 
 
 def test_config_defaults() -> None:

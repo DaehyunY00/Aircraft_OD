@@ -3,6 +3,7 @@ paths:
   raw_data: "data/raw"
   processed_data: "data/processed"
   experiments_data: "data/experiments"
+  synthetic_data: null               # null이면 processed_data/synthetic_inpaint (휘발성)
   outputs: "outputs"
 
 kaggle:
