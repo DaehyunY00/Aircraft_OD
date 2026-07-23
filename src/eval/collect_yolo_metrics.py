@@ -46,6 +46,47 @@ def _class_names(data_yaml: str | Path) -> list[str]:
     return normalize_class_names(data.get("names"), data.get("nc"))
 
 
+def per_class_ap_table(
+    names: list[str],
+    maps: Any = None,
+    all_ap: Any = None,
+    ap_class_index: Any = None,
+) -> pd.DataFrame:
+    """Per-class AP rows aligned by class id.
+
+    box.all_ap has one row per class PRESENT in the eval split, ordered by
+    box.ap_class_index — not by class id. Classes absent from the split stay
+    None (NaN in the CSV) so group means skip them; Ultralytics' maps fills
+    absent classes with the overall mAP, which would pollute group averages.
+    """
+    ap_rows_by_class: dict[int, Any] = {}
+    if all_ap is not None and ap_class_index is not None and len(ap_class_index) == len(all_ap):
+        for row_idx, present_class_id in enumerate(ap_class_index):
+            ap_rows_by_class[int(present_class_id)] = all_ap[row_idx]
+    per_class_rows: list[dict[str, Any]] = []
+    for class_id, class_name in enumerate(names):
+        ap50_95 = None
+        ap50 = None
+        ap_row = ap_rows_by_class.get(class_id)
+        if ap_row is not None:
+            ap50 = float(ap_row[0])
+            ap50_95 = float(sum(ap_row) / len(ap_row))
+        elif not ap_rows_by_class and maps is not None and class_id < len(maps):
+            # Legacy fallback when ap_class_index is unavailable in this
+            # Ultralytics version (maps is class-id aligned but fills absent
+            # classes with the overall mAP).
+            ap50_95 = float(maps[class_id])
+        per_class_rows.append(
+            {
+                "class_id": class_id,
+                "class_name": class_name,
+                "ap50": ap50,
+                "ap50_95": ap50_95,
+            }
+        )
+    return pd.DataFrame(per_class_rows)
+
+
 def validate_and_collect_per_class(
     weights: str | Path,
     data_yaml: str | Path,
@@ -64,26 +105,13 @@ def validate_and_collect_per_class(
         "precision": getattr(box, "mp", None),
         "recall": getattr(box, "mr", None),
     }
-    per_class_rows: list[dict[str, Any]] = []
-    maps = getattr(box, "maps", None)
-    all_ap = getattr(box, "all_ap", None)
-    for class_id, class_name in enumerate(names):
-        ap50_95 = None
-        ap50 = None
-        if maps is not None and class_id < len(maps):
-            ap50_95 = float(maps[class_id])
-        if all_ap is not None and class_id < len(all_ap):
-            ap50 = float(all_ap[class_id][0])
-            ap50_95 = float(sum(all_ap[class_id]) / len(all_ap[class_id]))
-        per_class_rows.append(
-            {
-                "class_id": class_id,
-                "class_name": class_name,
-                "ap50": ap50,
-                "ap50_95": ap50_95,
-            }
-        )
-    return overall, pd.DataFrame(per_class_rows)
+    per_class = per_class_ap_table(
+        names,
+        maps=getattr(box, "maps", None),
+        all_ap=getattr(box, "all_ap", None),
+        ap_class_index=getattr(box, "ap_class_index", None),
+    )
+    return overall, per_class
 
 
 def collect_metrics(

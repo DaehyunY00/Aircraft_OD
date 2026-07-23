@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from PIL import Image, ImageDraw
 from src.augment.build_experiment_datasets import build_experiment_datasets
 from src.augment.inpaint_background import generate_from_plan
@@ -90,15 +91,6 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
     synthetic_root = processed / "synthetic_inpaint"
     generate_from_plan(data_yaml, uniform_plan, synthetic_root, outputs, config, plan_name="uniform", dry_run=True)
     generate_from_plan(data_yaml, selective_plan, synthetic_root, outputs, config, plan_name="selective", dry_run=True)
-    experiment_yamls = build_experiment_datasets(
-        data_yaml,
-        experiments,
-        uniform_plan=uniform_plan,
-        selective_plan=selective_plan,
-        synthetic_root=synthetic_root,
-        variants=config["experiments"]["variants"],
-        config=config,
-    )
 
     assert (outputs / "analysis" / "dataset_summary.csv").exists()
     assert (outputs / "synthetic" / "generation_log.csv").exists()
@@ -108,6 +100,32 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
     assert len(list((synthetic_root / "images" / "train").glob("*.jpg"))) == int(
         pd.read_csv(selective_plan)["num_synthetic_images"].sum()
     )
-    assert set(experiment_yamls) == set(config["experiments"]["variants"])
+
+    # Non-inpaint variants build fine from dry-run state (they never touch the
+    # synthetic plan directories).
+    non_inpaint = ["real_only", "basic_aug", "aug_oversample", "aug_rfs", "aug_copy_paste"]
+    experiment_yamls = build_experiment_datasets(
+        data_yaml,
+        experiments,
+        uniform_plan=uniform_plan,
+        selective_plan=selective_plan,
+        synthetic_root=synthetic_root,
+        variants=non_inpaint,
+        config=config,
+    )
+    assert set(experiment_yamls) == set(non_inpaint)
     for yaml_path in experiment_yamls.values():
         assert yaml_path.exists()
+
+    # Inpaint variants must be REFUSED while the dry-run marker is present:
+    # the plan directories only contain original copies.
+    with pytest.raises(RuntimeError, match="DRY_RUN_MARKER"):
+        build_experiment_datasets(
+            data_yaml,
+            experiments,
+            uniform_plan=uniform_plan,
+            selective_plan=selective_plan,
+            synthetic_root=synthetic_root,
+            variants=["aug_uniform_inpaint", "aug_selective_inpaint"],
+            config=config,
+        )

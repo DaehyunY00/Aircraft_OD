@@ -69,7 +69,13 @@ def _train_and_collect(
     return run_dir
 
 
-def _metric_available(outputs: Path, experiment: str, seed: int, eval_split: str) -> bool:
+def _metric_available(outputs: Path, experiment: str, seed: int, eval_split: str, run_dir: Path | None = None) -> bool:
+    """True only when cached metric rows exist AND come from the given run_dir.
+
+    Without the run_dir check, --force-new-training (or a rebuilt dataset)
+    retrains a model that then never gets evaluated: the stale cached row wins
+    forever.
+    """
     raw_path = outputs / "metrics" / "raw_yolo_metrics.csv"
     per_class_path = outputs / "metrics" / "per_class_ap.csv"
     if not raw_path.exists() or not per_class_path.exists():
@@ -88,6 +94,11 @@ def _metric_available(outputs: Path, experiment: str, seed: int, eval_split: str
         & (per_class["seed"].astype(int) == int(seed))
         & (per_class.get("eval_split", "test") == eval_split)
     ]
+    if run_dir is not None:
+        if "run_dir" not in raw.columns or "run_dir" not in per_class.columns:
+            return False
+        raw_match = raw_match[raw_match["run_dir"].astype(str) == str(run_dir)]
+        per_class_match = per_class_match[per_class_match["run_dir"].astype(str) == str(run_dir)]
     return not raw_match.empty and not per_class_match.empty
 
 
@@ -100,8 +111,8 @@ def _collect_for_split(
     seed: int,
     eval_split: str,
 ) -> None:
-    if _metric_available(outputs, variant, seed, eval_split):
-        print(f"[INFO] 기존 metric 재사용: {variant}, seed={seed}, split={eval_split}")
+    if _metric_available(outputs, variant, seed, eval_split, run_dir=run_dir):
+        print(f"[INFO] 기존 metric 재사용: {variant}, seed={seed}, split={eval_split} (run={run_dir.name})")
         return
     weights = _best_weights(run_dir)
     collect_metrics(

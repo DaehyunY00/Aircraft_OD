@@ -18,6 +18,10 @@ from src.utils.yolo import label_path_for_image, list_images, read_yolo_labels
 def collect_tail_sources(images_dir: Path, labels_dir: Path, tail_ids: set[int]) -> list[tuple[Path, Path, int]]:
     sources: list[tuple[Path, Path, int]] = []
     for image_path in list_images(images_dir):
+        # In-place output dir: skip our own copies or every rerun/resume grows
+        # the source pool and appends new duplicates beyond the plan budget.
+        if "_oversample_c" in image_path.stem:
+            continue
         label_path = label_path_for_image(image_path, images_dir, labels_dir)
         labels = read_yolo_labels(label_path)
         present = sorted({int(label["class_id"]) for label in labels if int(label["class_id"]) in tail_ids})

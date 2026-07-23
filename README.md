@@ -235,6 +235,10 @@ pytest tests/
 
 ## Troubleshooting
 
+- `quality_report.csv`의 `clip_score`나 `fid_by_class_*.csv`의 `fid`가 전부 비어 있으면
+  품질 지표 백엔드가 로드되지 않은 것입니다. FID는 `torch-fidelity`가 필수라
+  `pip install "torchmetrics[image,multimodal]"`로 설치해야 하며(requirements.txt에 반영됨),
+  실패 시 로그에 `[ERROR]`와 traceback이 출력됩니다.
 - Kaggle download가 실패하면 `~/.kaggle/kaggle.json` 권한이 `600`인지 확인하세요.
 - `ModuleNotFoundError: No module named 'ultralytics'`가 나오면 `pip install -r requirements.txt`를 먼저 실행하세요.
 - Diffusion inference가 OOM이면 `configs/full.yaml`에서 `resolution`, `num_inference_steps`, synthetic budget을 낮추세요.

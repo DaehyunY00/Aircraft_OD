@@ -113,14 +113,19 @@ def compute_long_tail_metrics(
     def _plan_budget(plan_csv: Path) -> int:
         return int(pd.read_csv(plan_csv)["num_synthetic_images"].sum()) if plan_csv.exists() else 0
 
-    def _realized_inpaint(plan_name: str) -> int | None:
-        """Actual accepted synthetic images for an inpaint plan (incl. refill).
+    def _realized_inpaint(plan_name: str, include_refill: bool = False) -> int | None:
+        """Actual accepted synthetic images for an inpaint plan.
 
         Reported instead of the plan budget so the same-budget comparison and the
         per-image efficiency metrics use the images that truly reached training.
+        Refill images are only linked into the _qf variants by the dataset
+        builder, so the base variant count must not include the refill log.
         """
+        log_names = [f"generation_log_{plan_name}.csv"]
+        if include_refill:
+            log_names.append(f"generation_log_{plan_name}_refill.csv")
         total = None
-        for log_name in (f"generation_log_{plan_name}.csv", f"generation_log_{plan_name}_refill.csv"):
+        for log_name in log_names:
             log_path = synthetic_dir / log_name
             if not log_path.exists():
                 continue
@@ -130,6 +135,15 @@ def compute_long_tail_metrics(
             realized = log[~log.get("dry_run", False).astype(bool)] if "dry_run" in log.columns else log
             total = (total or 0) + int(realized["accepted"].astype(bool).sum())
         return total
+
+    def _quality_dropped(plan_name: str) -> int:
+        filter_path = synthetic_dir / f"quality_filter_{plan_name}.csv"
+        if not filter_path.exists():
+            return 0
+        df = pd.read_csv(filter_path)
+        if "kept" not in df.columns:
+            return 0
+        return int((~df["kept"].astype(bool)).sum())
 
     synthetic_counts = {"real_only": 0, "basic_aug": 0}
     uniform_plan = analysis_dir / "augmentation_plan_uniform.csv"
@@ -146,10 +160,17 @@ def compute_long_tail_metrics(
         if experiment in synthetic_counts:
             return synthetic_counts[experiment]
         try:
-            from src.utils.variants import parse_variant
+            from src.utils.variants import parse_variant, uses_synthetic_plan
 
-            # suffix variants (e.g. _qf) keep the base budget: filtering is refilled
-            return synthetic_counts.get(parse_variant(str(experiment)).base, 0)
+            spec = parse_variant(str(experiment))
+            if spec.quality_filter:
+                plan = uses_synthetic_plan(spec.base)
+                if plan:
+                    # _qf dataset = plan accepted - quality-dropped + refill accepted
+                    realized = _realized_inpaint(plan, include_refill=True)
+                    if realized is not None:
+                        return max(0, realized - _quality_dropped(plan))
+            return synthetic_counts.get(spec.base, 0)
         except ValueError:
             return 0
 

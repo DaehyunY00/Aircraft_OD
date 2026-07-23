@@ -73,10 +73,12 @@ def add_synthetic_split(
     dest_root: Path,
     overwrite: bool = False,
     include_names: set[str] | None = None,
+    exclude_names: set[str] | None = None,
 ) -> int:
     """Link a synthetic plan's train images into a variant dataset.
 
-    include_names restricts to the given file names (quality filtering).
+    include_names restricts to the given file names (generation-log filtering);
+    exclude_names removes specific files on top of that (quality filtering).
     """
     images_dir = synthetic_root / "images" / "train"
     labels_dir = synthetic_root / "labels" / "train"
@@ -85,6 +87,8 @@ def add_synthetic_split(
     count = 0
     for image_path in tqdm(list_images(images_dir), desc=f"add synthetic {synthetic_root.name}"):
         if include_names is not None and image_path.name not in include_names:
+            continue
+        if exclude_names is not None and image_path.name in exclude_names:
             continue
         label_path = label_path_for_image(image_path, images_dir, labels_dir)
         copy_or_symlink(image_path, dest_root / "images" / "train" / image_path.name, overwrite=overwrite)
@@ -102,6 +106,22 @@ def quality_kept_names(quality_filter_csv: Path) -> set[str] | None:
     if "kept" not in df.columns or "image" not in df.columns:
         return None
     return {Path(str(p)).name for p in df.loc[df["kept"].astype(bool), "image"]}
+
+
+def quality_dropped_names(quality_filter_csv: Path) -> set[str] | None:
+    """File names explicitly DROPPED by the quality filter, or None when absent.
+
+    The filter only scores a sample of the accepted images (synthetic_quality.
+    max_images). Excluding the dropped ones — instead of intersecting with the
+    kept ones — keeps every unscored image in the _qf dataset, so the variant's
+    budget does not collapse to the scored sample.
+    """
+    if not quality_filter_csv.exists():
+        return None
+    df = pd.read_csv(quality_filter_csv)
+    if "kept" not in df.columns or "image" not in df.columns:
+        return None
+    return {Path(str(p)).name for p in df.loc[~df["kept"].astype(bool), "image"]}
 
 
 def accepted_names_from_logs(generation_log_dir: Path, plan_name: str) -> set[str] | None:
@@ -123,6 +143,10 @@ def accepted_names_from_logs(generation_log_dir: Path, plan_name: str) -> set[st
         if "accepted" not in log.columns or "output_image" not in log.columns:
             continue
         found = True
+        # dry-run rows are accepted=True structural placeholders (original
+        # copies) — training on them silently invalidates the experiment.
+        if "dry_run" in log.columns:
+            log = log[~log["dry_run"].astype(bool)]
         accepted = log[log["accepted"].astype(bool)]
         names |= {Path(str(p)).name for p in accepted["output_image"]}
     return names if found else None
@@ -161,7 +185,11 @@ def build_experiment_datasets(
 
         plan_name = uses_synthetic_plan(variant)
         seed = int((config or {}).get("detector", {}).get("seeds", [42])[0])
-        if spec.base == "aug_copy_paste" and selective_plan:
+        if spec.base in ("aug_copy_paste", "aug_oversample") and not selective_plan:
+            # Without a plan these branches would fall through and train a
+            # silent basic_aug clone under a tail-technique name.
+            raise ValueError(f"{variant}: augmentation plan(selective_plan)이 없어 데이터셋을 만들 수 없습니다.")
+        if spec.base == "aug_copy_paste":
             created = copy_paste_from_plan(
                 variant_root / "images" / "train",
                 variant_root / "labels" / "train",
@@ -172,6 +200,8 @@ def build_experiment_datasets(
                 seed=seed,
                 overwrite=overwrite,
             )
+            if created == 0:
+                raise RuntimeError(f"{variant}: copy-paste 샘플이 0장 생성됐습니다 — basic_aug와 동일한 무효 실험이 됩니다.")
             print(f"[INFO] {variant} 추가 샘플 수: {created}")
         elif spec.base == "aug_rfs":
             created = apply_rfs(
@@ -183,8 +213,13 @@ def build_experiment_datasets(
                 seed=seed,
                 overwrite=overwrite,
             )
+            if created == 0:
+                raise RuntimeError(
+                    f"{variant}: RFS 복제가 0장입니다 (threshold가 모든 클래스 빈도보다 낮음) — "
+                    "basic_aug와 동일한 무효 실험이 됩니다. rfs.threshold를 올리거나 variant를 제외하세요."
+                )
             print(f"[INFO] {variant} RFS 복제 수: {created}")
-        elif spec.base == "aug_oversample" and selective_plan:
+        elif spec.base == "aug_oversample":
             created = oversample_from_plan(
                 variant_root / "images" / "train",
                 variant_root / "labels" / "train",
@@ -193,29 +228,37 @@ def build_experiment_datasets(
                 variant_root / "labels" / "train",
                 overwrite=overwrite,
             )
+            if created == 0:
+                raise RuntimeError(f"{variant}: oversampling 샘플이 0장 생성됐습니다 — basic_aug와 동일한 무효 실험이 됩니다.")
             print(f"[INFO] {variant} 추가 샘플 수: {created}")
         elif plan_name:
+            dry_run_marker = synthetic_root / plan_name / "DRY_RUN_MARKER.txt"
+            if dry_run_marker.exists():
+                raise RuntimeError(
+                    f"{variant}: {dry_run_marker}가 존재합니다 — 이 plan 디렉터리는 --dry-run-inpaint가 "
+                    "만든 원본 사본입니다. --skip-inpaint/--only-train 없이 실제 생성을 먼저 실행하세요."
+                )
             log_names = (
                 accepted_names_from_logs(Path(generation_log_dir), plan_name)
                 if generation_log_dir is not None
                 else None
             )
-            include: set[str] | None = log_names
+            exclude: set[str] | None = None
             if spec.quality_filter:
                 if quality_filter_dir is None:
                     raise ValueError(
                         f"{variant}: quality-filtered variant인데 quality_filter_dir가 없습니다. "
                         "먼저 synthetic quality 채점(quality_filter.enabled)을 실행하세요."
                     )
-                kept = quality_kept_names(Path(quality_filter_dir) / f"quality_filter_{plan_name}.csv")
-                if kept is None:
+                exclude = quality_dropped_names(Path(quality_filter_dir) / f"quality_filter_{plan_name}.csv")
+                if exclude is None:
                     raise FileNotFoundError(
                         f"{variant}: {quality_filter_dir}/quality_filter_{plan_name}.csv가 없거나 "
                         "kept 컬럼이 없습니다. 품질 채점/필터링 단계를 먼저 실행하세요."
                     )
-                include = kept if include is None else {name for name in include if name in kept}
             added = add_synthetic_split(
-                synthetic_root / plan_name, variant_root, overwrite=overwrite, include_names=include
+                synthetic_root / plan_name, variant_root, overwrite=overwrite,
+                include_names=log_names, exclude_names=exclude,
             )
             if spec.quality_filter:
                 # budget refill: images regenerated to replace the filtered-out ones

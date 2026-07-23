@@ -120,8 +120,14 @@ def run_statistical_tests(
     groups = pd.read_csv(class_groups_csv)
     if eval_split and "eval_split" in per_class.columns:
         filtered = per_class[per_class["eval_split"] == eval_split]
-        if not filtered.empty:
-            per_class = filtered
+        if filtered.empty:
+            # Falling back to the unfiltered frame would silently mix planning
+            # (val) rows with final-eval rows in the same test.
+            raise ValueError(
+                f"per_class_ap에 eval_split={eval_split} 행이 없습니다. "
+                "해당 split의 metric 수집을 먼저 실행하세요."
+            )
+        per_class = filtered
     ap_col = _ap_column(per_class)
     tail_ids = set(groups.loc[groups["group"] == "tail", "class_id"].astype(int))
     scopes: dict[str, set[int] | None] = {"all": None, "tail": tail_ids}

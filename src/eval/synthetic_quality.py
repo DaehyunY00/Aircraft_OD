@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
@@ -70,7 +71,11 @@ def make_clip_scorer(model_name: str = "openai/clip-vit-base-patch16") -> ClipSc
         metric = CLIPScore(model_name_or_path=model_name)
         metric.eval()
     except Exception as exc:
-        print(f"[WARN] torchmetrics CLIPScore를 사용할 수 없어 clip_score는 기록하지 않습니다: {exc}")
+        # Full traceback on purpose: this exact failure produced all-NaN
+        # clip_score columns in past runs and the one-line message got lost in
+        # Colab logs.
+        print(f"[ERROR] torchmetrics CLIPScore를 사용할 수 없어 clip_score는 기록하지 않습니다: {exc}")
+        traceback.print_exc()
         return None
 
     warned = {"done": False}
@@ -88,9 +93,10 @@ def make_clip_scorer(model_name: str = "openai/clip-vit-base-patch16") -> ClipSc
         except Exception as exc:
             if not warned["done"]:
                 print(
-                    "[WARN] CLIPScore 계산 실패(torchmetrics/transformers 버전 비호환 가능). "
+                    "[ERROR] CLIPScore 계산 실패(torchmetrics/transformers 버전 비호환 가능). "
                     f"clip_score는 비워둡니다: {exc}"
                 )
+                traceback.print_exc()
                 warned["done"] = True
             return None
 
@@ -156,6 +162,13 @@ def compute_quality_report(
         new_df = new_df.drop_duplicates(subset=["plan", "image"], keep="last")
     new_df.to_csv(report_path, index=False)
     print(f"[INFO] quality report 저장: {report_path} ({len(rows)}장 채점)")
+    if rows and all(row["clip_score"] is None for row in rows):
+        print(
+            f"[ERROR] {plan_name}: CLIPScore가 한 장도 채점되지 않았습니다 (전체 NaN). "
+            "위의 traceback을 확인하세요 — 이 상태로는 품질 보고와 _qf 필터링이 무의미합니다."
+        )
+    if rows and all(row["lpips"] is None for row in rows):
+        print(f"[ERROR] {plan_name}: LPIPS가 한 장도 채점되지 않았습니다 (전체 NaN).")
     return report_path
 
 
@@ -177,7 +190,8 @@ def compute_class_fid(
         import torch
         from torchmetrics.image.fid import FrechetInceptionDistance
     except Exception:
-        print("[WARN] torchmetrics FrechetInceptionDistance를 사용할 수 없어 FID를 건너뜁니다.")
+        print("[ERROR] torchmetrics FrechetInceptionDistance를 사용할 수 없어 FID를 건너뜁니다 (fid 열 전체가 빈 값이 됩니다).")
+        traceback.print_exc()
         pd.DataFrame(columns=["class_id", "class_name", "n_real", "n_synthetic", "fid"]).to_csv(fid_path, index=False)
         return fid_path
 
@@ -187,11 +201,13 @@ def compute_class_fid(
     log = log[log["accepted"].astype(bool)]
     real_by_class = collect_source_images_by_class(data_yaml)
 
+    fid_error_traced = {"done": False}
+
     def _tensor_batch(paths: list[Path], limit: int | None):
         selected = paths[:limit] if limit else paths
         batch = []
         for path in selected:
-            image = load_rgb(path).resize((299, 299))
+            image = load_rgb(path).resize((299, 299), Image.BILINEAR)
             # np.array (copy) -> writable, avoids torch non-writable-tensor warning
             batch.append(torch.from_numpy(np.array(image, dtype=np.uint8)).permute(2, 0, 1))
         return torch.stack(batch) if batch else None
@@ -204,7 +220,10 @@ def compute_class_fid(
             metric.update(_tensor_batch(fake_paths, max_images), real=False)
             return float(metric.compute())
         except Exception as exc:
-            print(f"[WARN] FID 계산 실패 — 해당 항목은 비워둡니다: {exc}")
+            print(f"[ERROR] FID 계산 실패 — 해당 항목은 비워둡니다: {exc}")
+            if not fid_error_traced["done"]:
+                traceback.print_exc()
+                fid_error_traced["done"] = True
             return None
 
     rows: list[dict[str, Any]] = []
@@ -261,7 +280,9 @@ def plan_quality_filter(
         df["kept"] = True
         return df, pd.DataFrame(columns=["class_id", "class_name", "num_synthetic_images", "start_index"])
     cutoff = float(np.nanpercentile(scores.to_numpy(dtype=float), clip_score_percentile))
-    df["kept"] = scores >= cutoff
+    # NaN clip_score means "scoring failed", not "low quality": keep those
+    # images (NaN < cutoff is False) instead of silently dropping them.
+    df["kept"] = ~(scores < cutoff)
     dropped = df[~df["kept"]]
     refill_rows = []
     for class_id, group in dropped.groupby("class_id"):

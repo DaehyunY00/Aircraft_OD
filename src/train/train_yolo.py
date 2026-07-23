@@ -13,7 +13,7 @@ for _parent in Path(__file__).resolve().parents:
         sys.path.insert(0, str(_parent))
         break
 
-from src.utils.io import ensure_dir, load_config, save_yaml
+from src.utils.io import ensure_dir, load_config, load_yaml, save_yaml
 from src.utils.seed import set_seed
 from src.utils.timing import format_duration
 
@@ -56,16 +56,51 @@ def is_completed_run(run_dir: str | Path) -> bool:
     return (run_dir / "training_meta.yaml").exists() and best_or_last_weights(run_dir) is not None
 
 
+def run_fingerprint(
+    detector: dict[str, Any],
+    data_yaml: str | Path,
+    use_basic_aug: bool,
+) -> dict[str, Any]:
+    """Identity of what a training run was trained on/with.
+
+    Stored in training_meta.yaml and compared before reusing a completed run,
+    so a config or dataset-path change invalidates the cached run instead of
+    silently reporting stale results.
+    """
+    return {
+        "data_yaml": str(data_yaml),
+        "model": str(detector.get("model", "yolov8n.pt")),
+        "imgsz": int(detector.get("imgsz", 640)),
+        "epochs": int(detector.get("epochs", 50)),
+        "use_basic_aug": bool(use_basic_aug),
+    }
+
+
 def find_reusable_run(
     project: str | Path,
     name: str,
     model_name: str,
     seed: int,
+    expected_fingerprint: dict[str, Any] | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Return a completed run or an interrupted run with last.pt for resume."""
     for run_dir in matching_run_dirs(project, name, model_name, seed):
-        if is_completed_run(run_dir):
-            return run_dir, None
+        if not is_completed_run(run_dir):
+            continue
+        if expected_fingerprint is not None:
+            stored = (load_yaml(run_dir / "training_meta.yaml") or {}).get("fingerprint")
+            if stored is None:
+                print(
+                    f"[WARN] {run_dir.name}: fingerprint가 없는 구버전 run을 재사용합니다. "
+                    "config(epochs/imgsz/model)나 데이터셋이 그때와 같은지 직접 확인하세요."
+                )
+            elif stored != expected_fingerprint:
+                print(
+                    f"[INFO] {run_dir.name}: config/데이터 fingerprint 불일치 — 재사용하지 않습니다.\n"
+                    f"  저장됨: {stored}\n  현재값: {expected_fingerprint}"
+                )
+                continue
+        return run_dir, None
     for run_dir in matching_run_dirs(project, name, model_name, seed):
         checkpoint = resume_weights(run_dir)
         if checkpoint is not None:
@@ -137,10 +172,13 @@ def train_yolo(
     project = Path(project or Path(config["paths"]["outputs"]) / "runs")
     ensure_dir(project)
 
+    fingerprint = run_fingerprint(detector, data_yaml, use_basic_aug)
     resume_run_dir: Path | None = None
     resume_checkpoint: Path | None = None
     if resume and not force_new_run:
-        resume_run_dir, resume_checkpoint = find_reusable_run(project, name, model_name, seed)
+        resume_run_dir, resume_checkpoint = find_reusable_run(
+            project, name, model_name, seed, expected_fingerprint=fingerprint
+        )
         if resume_run_dir is not None and resume_checkpoint is None:
             print(f"[INFO] 완료된 YOLO run 재사용: {resume_run_dir}")
             return resume_run_dir
@@ -225,7 +263,11 @@ def train_yolo(
             "run_name": run_name,
             "seed": seed,
             "training_seconds": elapsed,
+            # A resumed run only measures the resumed segment, so downstream
+            # time-efficiency metrics (ap_gain_per_training_hour) overestimate.
+            "training_seconds_resumed_segment_only": resume_checkpoint is not None,
             "args": train_args,
+            "fingerprint": fingerprint,
             "resumed_from": str(resume_checkpoint) if resume_checkpoint else "",
         },
         run_dir / "training_meta.yaml",

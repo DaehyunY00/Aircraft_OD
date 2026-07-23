@@ -15,4 +15,6 @@ scikit-learn
 imagehash
 pytest
 scipy
-torchmetrics
+# [image] pulls torch-fidelity (FrechetInceptionDistance hard-requires it;
+# without it every FID silently became NaN), [multimodal] covers CLIPScore deps.
+torchmetrics[image,multimodal]
