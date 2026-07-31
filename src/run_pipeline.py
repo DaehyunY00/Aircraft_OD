@@ -31,7 +31,7 @@ from src.eval.synthetic_quality import (
 from src.train.train_yolo import train_yolo
 from src.utils.io import ensure_dir, load_config, save_json
 from src.utils.timing import ProgressTimer, format_duration
-from src.utils.variants import parse_variant, uses_basic_aug, uses_synthetic_plan
+from src.utils.variants import SYNTHETIC_PLAN_NAMES, parse_variant, uses_basic_aug, uses_synthetic_plan
 
 
 def _best_weights(run_dir: Path) -> Path | None:
@@ -175,7 +175,7 @@ def _run_training_jobs(
     return run_dirs
 
 
-def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tuple[Path, Path, Path]:
+def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tuple[Path, Path, Path, Path]:
     paths = cfg["paths"]
     raw_data = Path(paths["raw_data"])
     processed_data = Path(paths["processed_data"])
@@ -212,8 +212,10 @@ def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tupl
         seed=int(cfg.get("detector", {}).get("seeds", [42])[0]),
     )
     grouped = analyze_long_tail(data_yaml, cfg, outputs)
-    uniform_plan, selective_plan = build_augmentation_plans(grouped, None, cfg.get("selective_generation", {}), outputs)
-    return Path(data_yaml), uniform_plan, selective_plan
+    uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
+        grouped, None, cfg.get("selective_generation", {}), outputs
+    )
+    return Path(data_yaml), uniform_plan, selective_plan, weakness_plan
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -246,7 +248,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
             force_new_training=args.force_new_training,
         )
     else:
-        base_data_yaml, uniform_plan, selective_plan = run_analysis(cfg, force=args.force, download=args.download)
+        base_data_yaml, uniform_plan, selective_plan, weakness_plan = run_analysis(
+            cfg, force=args.force, download=args.download
+        )
         print(f"[시간] 분석 단계 완료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
         if args.only_analysis:
             print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
@@ -283,7 +287,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 f"[WARN] 계획 split={planning_split}의 {baseline_variant} AP를 찾지 못했습니다. "
                 "class frequency만으로 synthetic plan을 생성합니다."
             )
-        uniform_plan, selective_plan = build_augmentation_plans(
+        uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
             grouped,
             planning_baseline_ap,
             cfg.get("selective_generation", {}),
@@ -321,7 +325,25 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 force=args.force,
                 dry_run=args.dry_run_inpaint,
             )
+            generate_from_plan(
+                base_data_yaml,
+                weakness_plan,
+                synthetic_root,
+                outputs,
+                cfg,
+                plan_name="weakness",
+                force=args.force,
+                dry_run=args.dry_run_inpaint,
+            )
             print(f"[시간] synthetic 생성 완료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
+            if args.stop_after_inpaint:
+                print(
+                    "[INFO] --stop-after-inpaint: synthetic 생성까지만 수행하고 종료합니다. "
+                    "품질 채점은 src/eval/synthetic_quality.py CLI로 별도 환경에서 실행하고, "
+                    "이후 학습은 --skip-inpaint로 재개하세요."
+                )
+                print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
+                return
 
         # Synthetic quality scoring (CLIPScore/LPIPS/FID) and optional
         # CLIPScore-percentile filtering with budget refill for *_qf variants.
@@ -332,7 +354,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         qf_plans.discard(None)
         if not args.skip_inpaint and not args.dry_run_inpaint and (sq_cfg["enabled"] or (qf_cfg["enabled"] and qf_plans)):
             print(f"[시간] synthetic 품질 채점 시작 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
-            for plan_name in ("uniform", "selective"):
+            for plan_name in SYNTHETIC_PLAN_NAMES:
                 log_csv = outputs / "synthetic" / f"generation_log_{plan_name}.csv"
                 if not log_csv.exists():
                     continue
@@ -433,6 +455,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the full tail-class inpainting experiment pipeline.")
     parser.add_argument("--config", default="configs/smoke.yaml")
     parser.add_argument("--skip-inpaint", action="store_true", help="Skip diffusion generation and use existing synthetic files")
+    parser.add_argument(
+        "--stop-after-inpaint",
+        action="store_true",
+        help="Exit after synthetic generation (before quality scoring/dataset build/training); score offline via src/eval/synthetic_quality.py",
+    )
     parser.add_argument("--only-train", action="store_true", help="Train existing experiment datasets only")
     parser.add_argument("--only-analysis", action="store_true", help="Normalize/analyze dataset and create augmentation plans only")
     parser.add_argument("--download", action="store_true", help="Download Kaggle dataset before analysis")

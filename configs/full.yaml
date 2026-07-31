@@ -19,9 +19,13 @@ detector:
   imgsz: 640
   epochs: 50
   batch: -1
-  workers: 2
+  workers: 8                     # Colab 2 vCPU 기준 2였으나 GPU를 굶김. GCP 8 vCPU 기준
   patience: 15
-  seeds: [42, 43, 44]
+  # 단일 seed. baseline(real_only/basic_aug)은 이미 42/43/44가 학습돼 있어
+  # per_class_ap.csv에 3-seed 행이 남아 있고, 거기서 측정된 seed 분산
+  # (basic_aug tail AP 0.690~0.705, 폭 0.015)을 노이즈 하한으로 인용한다.
+  # 합성 arm 간 차이가 이 폭을 넘는지로 판단할 것.
+  seeds: [42]
 
 eval:
   split: "test"
@@ -39,16 +43,21 @@ tail:
     medium_max_instances: 400    # 200 < instance <= 400 -> medium, 초과 -> head
 
 statistics:
-  comparison_pairs:              # Wilcoxon signed-rank 대응 쌍 (variant_a vs variant_b)
+  comparison_pairs:              # Wilcoxon signed-rank 대응 쌍 (클래스 단위 페어, n=13/43)
     - ["aug_selective_inpaint", "aug_uniform_inpaint"]
     - ["aug_selective_inpaint", "basic_aug"]
-  confidence: 0.95               # seed macro AP CI 신뢰수준
+    - ["aug_weakness_inpaint", "aug_uniform_inpaint"]
+    - ["aug_weakness_inpaint", "aug_selective_inpaint"]   # 핵심 비교: 배분 신호(빈도 vs 측정 AP)
+    - ["aug_weakness_inpaint", "basic_aug"]
+  confidence: 0.95               # seed macro AP CI 신뢰수준 (단일 seed에서는 NaN)
 
 selective_generation:
   alpha: 0.6
   total_synthetic_budget: 1000
   min_per_class: 5
-  max_per_class: 200                 # 80은 budget 1000/13클래스(=77)에서 selective 집중 여지를 3장으로 만들어 RQ2를 퇴화시킴
+  weakness_num_classes: 13           # weakness plan이 고를 클래스 수. tail 13개와 동일하게 두어
+                                     # K와 예산을 고정하고 '배분 신호'만 변수로 남긴다
+  max_per_class: 200                # 80은 budget 1000/13클래스(=77)에서 selective 집중 여지를 3장으로 만들어 RQ2를 퇴화시킴
 
 diffusion:
   model_id: "runwayml/stable-diffusion-inpainting"
@@ -108,3 +117,4 @@ experiments:
     - aug_copy_paste
     - aug_uniform_inpaint
     - aug_selective_inpaint
+    - aug_weakness_inpaint

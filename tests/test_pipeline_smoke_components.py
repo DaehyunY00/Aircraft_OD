@@ -86,11 +86,14 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
 
     data_yaml = normalize_dataset(raw, processed / "base", seed=42)
     grouped = analyze_long_tail(data_yaml, config, outputs)
-    uniform_plan, selective_plan = build_augmentation_plans(grouped, None, config["selective_generation"], outputs)
+    uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
+        grouped, None, config["selective_generation"], outputs
+    )
 
     synthetic_root = processed / "synthetic_inpaint"
     generate_from_plan(data_yaml, uniform_plan, synthetic_root, outputs, config, plan_name="uniform", dry_run=True)
     generate_from_plan(data_yaml, selective_plan, synthetic_root, outputs, config, plan_name="selective", dry_run=True)
+    generate_from_plan(data_yaml, weakness_plan, synthetic_root, outputs, config, plan_name="weakness", dry_run=True)
 
     assert (outputs / "analysis" / "dataset_summary.csv").exists()
     assert (outputs / "synthetic" / "generation_log.csv").exists()

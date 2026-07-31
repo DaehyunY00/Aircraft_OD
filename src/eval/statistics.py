@@ -131,6 +131,14 @@ def run_statistical_tests(
     ap_col = _ap_column(per_class)
     tail_ids = set(groups.loc[groups["group"] == "tail", "class_id"].astype(int))
     scopes: dict[str, set[int] | None] = {"all": None, "tail": tail_ids}
+    # The weakness arm targets a different class set than the frequency-defined
+    # tail, so reporting it only under 'tail' would score it on classes it never
+    # augmented. Scope it to the classes its own plan selected.
+    weakness_plan_csv = Path(outputs) / "analysis" / "augmentation_plan_weakness.csv"
+    if weakness_plan_csv.exists():
+        weak_ids = set(pd.read_csv(weakness_plan_csv)["class_id"].astype(int))
+        if weak_ids:
+            scopes["weak"] = weak_ids
 
     test_rows: list[dict[str, Any]] = []
     for variant_a, variant_b in settings["comparison_pairs"]:

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 for _parent in Path(__file__).resolve().parents:
     if (_parent / "src").is_dir():
@@ -36,6 +37,45 @@ from src.utils.timing import ProgressTimer
 from src.utils.yolo import label_path_for_image, list_images, read_yolo_labels
 
 DRY_RUN_MARKER_NAME = "DRY_RUN_MARKER.txt"
+
+
+def drive_io_retry(operation: Callable[[], Any], desc: str, attempts: int = 5, base_delay: float = 2.0) -> Any:
+    # Google Drive FUSE 마운트는 대량 소파일 쓰기 중 일시적 OSError(ENOENT/EIO)를
+    # 던질 수 있고(2026-07-27 full run이 570/1000장에서 이걸로 사망), 수 초 뒤에는
+    # 대부분 회복된다. 한 번의 hiccup이 수 시간짜리 생성 루프를 죽이지 않도록
+    # 지수 backoff로 재시도하고, parent 디렉터리도 매 시도마다 다시 보장한다.
+    for i in range(attempts):
+        try:
+            return operation()
+        except OSError as exc:
+            if i == attempts - 1:
+                raise
+            wait = base_delay * (2**i)
+            print(f"[WARN] I/O 오류({desc}): {exc} — {wait:.0f}초 후 재시도 ({i + 1}/{attempts - 1})")
+            time.sleep(wait)
+
+
+def save_image_with_retry(image: Image.Image, path: Path, quality: int | None = None) -> None:
+    def _op() -> None:
+        ensure_dir(Path(path).parent)
+        image.save(path) if quality is None else image.save(path, quality=quality)
+
+    drive_io_retry(_op, f"이미지 저장 {Path(path).name}")
+
+
+def write_with_retry(path: Path, writer: Callable[[], Any], desc: str) -> Any:
+    # ensure_dir 없이 재시도만 하면 parent 디렉터리가 사라진 ENOENT는 절대 회복되지
+    # 않고 backoff만 낭비한 뒤 죽는다(2026-07-29 full run이 debug_masks/uniform
+    # 소실로 uniform 476/1000에서 사망). 모든 Drive 쓰기는 parent를 다시 보장한다.
+    def _op() -> Any:
+        ensure_dir(Path(path).parent)
+        return writer()
+
+    return drive_io_retry(_op, desc)
+
+
+def copy_file_with_retry(src: Path, dst: Path, overwrite: bool = False) -> None:
+    drive_io_retry(lambda: copy_file(src, dst, overwrite=overwrite), f"파일 복사 {Path(dst).name}")
 
 
 def _torch_dtype(name: str):
@@ -281,9 +321,9 @@ def generate_from_plan(
                 verified, metrics = verify_pair(original, existing, existing_boxes, ver_cfg, lpips_fn=lpips_fn)
                 if verified:
                     if canonical_image_dir and not canonical_output_image.exists():
-                        copy_file(output_image, canonical_output_image, overwrite=True)
+                        copy_file_with_retry(output_image, canonical_output_image, overwrite=True)
                     if canonical_label_dir and not canonical_output_label.exists():
-                        copy_file(output_label, canonical_output_label, overwrite=True)
+                        copy_file_with_retry(output_label, canonical_output_label, overwrite=True)
                     label_count_output = len(read_yolo_labels(canonical_output_label)) if canonical_output_label.exists() else 0
                     logs.append(
                         {
@@ -328,7 +368,7 @@ def generate_from_plan(
                 blur_radius=int(diffusion_cfg.get("mask_blur_radius", 8)),
             )
             if len(contact_rows) < 12:
-                mask.save(debug_dir / f"{output_image.stem}_mask.png")
+                save_image_with_retry(mask, debug_dir / f"{output_image.stem}_mask.png")
             accepted = False
             reject_reason = ""
             bbox_diff = 999.0
@@ -395,24 +435,24 @@ def generate_from_plan(
                         accepted = False
             if accepted:
                 accepted_count += 1
-                generated.save(output_image, quality=95)
-                copy_file(source_label, output_label, overwrite=True)
+                save_image_with_retry(generated, output_image, quality=95)
+                copy_file_with_retry(source_label, output_label, overwrite=True)
                 if canonical_image_dir:
-                    copy_file(output_image, canonical_output_image, overwrite=True)
+                    copy_file_with_retry(output_image, canonical_output_image, overwrite=True)
                 if canonical_label_dir:
-                    copy_file(output_label, canonical_output_label, overwrite=True)
+                    copy_file_with_retry(output_label, canonical_output_label, overwrite=True)
                 if len(contact_rows) < 12:
                     contact_rows.append([original, mask.convert("RGB"), generated])
             else:
                 rejected_path = rejected_dir / output_name
-                generated.save(rejected_path, quality=90)
+                save_image_with_retry(generated, rejected_path, quality=90)
                 if canonical_rejected_dir:
-                    copy_file(rejected_path, canonical_rejected_dir / output_name, overwrite=True)
+                    copy_file_with_retry(rejected_path, canonical_rejected_dir / output_name, overwrite=True)
                 # A rejected regeneration must also remove any stale file from the
                 # train split (e.g. a dry-run copy that failed re-verification).
                 for stale in (output_image, output_label, canonical_output_image, canonical_output_label):
                     if stale is not None and stale.exists():
-                        stale.unlink()
+                        drive_io_retry(lambda s=stale: s.unlink(missing_ok=True), f"stale 삭제 {stale.name}")
             log_image = canonical_output_image if accepted else (canonical_rejected_dir / output_name if canonical_rejected_dir else rejected_dir / output_name)
             log_label = canonical_output_label if accepted else output_label
             label_count_output = len(read_yolo_labels(log_label)) if accepted and log_label.exists() else 0
@@ -468,11 +508,17 @@ def generate_from_plan(
         dry_run_marker.unlink()
     log_df = pd.DataFrame(logs)
     log_path = synthetic_dir / f"generation_log_{plan_name}.csv"
-    log_df.to_csv(log_path, index=False)
+    write_with_retry(log_path, lambda: log_df.to_csv(log_path, index=False), f"생성 로그 저장 {log_path.name}")
     if plan_name == "selective":
-        log_df.to_csv(synthetic_dir / "generation_log.csv", index=False)
+        canonical_log = synthetic_dir / "generation_log.csv"
+        write_with_retry(canonical_log, lambda: log_df.to_csv(canonical_log, index=False), "생성 로그 저장 generation_log.csv")
     if contact_rows:
-        save_contact_sheet(contact_rows, synthetic_dir / f"review_sheet_{plan_name}.jpg", labels=["original", "mask", "generated"])
+        sheet_path = synthetic_dir / f"review_sheet_{plan_name}.jpg"
+        write_with_retry(
+            sheet_path,
+            lambda: save_contact_sheet(contact_rows, sheet_path, labels=["original", "mask", "generated"]),
+            f"review sheet 저장 {sheet_path.name}",
+        )
     print(f"[INFO] 생성 로그 저장: {log_path}")
     report_columns = [
         "source_image",

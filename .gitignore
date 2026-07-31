@@ -3,7 +3,9 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 
-data/
+# 루트의 데이터 디렉터리만. 앞의 '/'가 없으면 src/data/ 까지 무시해서
+# 소스 파일이 조용히 커밋에서 누락된다.
+/data/
 # Generated experiment outputs (weights, synthetic images, debug masks, figures,
 # metric/quality CSVs) live in Google Drive, not git. Curate a results snapshot
 # deliberately if needed — do not commit whole run directories.
@@ -16,3 +18,9 @@ outputs_pilot_deprecated/
 runs/
 *.pt
 *.pth
+
+# Kaggle API 토큰. Drive에는 두되 절대 커밋하지 않는다.
+kaggle.json
+# 생성된 synthetic 이미지 (Drive 보존, git 대상 아님)
+synthetic_full/
+synthetic_pilot/

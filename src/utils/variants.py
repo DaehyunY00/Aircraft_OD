@@ -9,6 +9,14 @@ Variant naming convention (marginal-gain design, see README Research Questions):
 - ``aug_copy_paste``        : basic_aug + tail copy-paste
 - ``aug_uniform_inpaint``   : basic_aug + uniform tail inpainting (Li et al. ECCV 2024)
 - ``aug_selective_inpaint`` : basic_aug + selective tail inpainting (proposed)
+- ``aug_weakness_inpaint``  : basic_aug + weakness-driven inpainting (proposed)
+
+The three inpainting variants share one generation budget and differ only in how
+that budget is *allocated*, which is the experiment's actual research question:
+uniform splits it evenly, selective weights the frequency-defined tail by
+rarity+weakness, and weakness ranks *all* classes by measured baseline AP. This
+dataset's instance_count/AP50 correlation is -0.33 (rarer classes score higher),
+so frequency and weakness select genuinely different class sets.
 
 Suffix axes are appended with ``_``:
 
@@ -31,6 +39,7 @@ KNOWN_BASE_VARIANTS = (
     "aug_copy_paste",
     "aug_uniform_inpaint",
     "aug_selective_inpaint",
+    "aug_weakness_inpaint",
 )
 
 _SUFFIX_FLAGS = {
@@ -77,11 +86,15 @@ def uses_basic_aug(variant: str) -> bool:
     return parse_variant(variant).base != "real_only"
 
 
+SYNTHETIC_PLAN_NAMES = ("uniform", "selective", "weakness")
+
+_PLAN_BY_BASE = {
+    "aug_uniform_inpaint": "uniform",
+    "aug_selective_inpaint": "selective",
+    "aug_weakness_inpaint": "weakness",
+}
+
+
 def uses_synthetic_plan(variant: str) -> str | None:
-    """Return which augmentation plan ('uniform'/'selective') a variant consumes."""
-    base = parse_variant(variant).base
-    if base == "aug_uniform_inpaint":
-        return "uniform"
-    if base == "aug_selective_inpaint":
-        return "selective"
-    return None
+    """Return which augmentation plan ('uniform'/'selective'/'weakness') a variant consumes."""
+    return _PLAN_BY_BASE.get(parse_variant(variant).base)

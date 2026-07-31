@@ -56,7 +56,7 @@ def test_build_augmentation_plans(tmp_path) -> None:
             },
         ]
     )
-    uniform, selective = build_augmentation_plans(
+    uniform, selective, weakness = build_augmentation_plans(
         grouped,
         None,
         {"alpha": 0.6, "total_synthetic_budget": 6, "min_per_class": 1, "max_per_class": 4},
@@ -64,5 +64,9 @@ def test_build_augmentation_plans(tmp_path) -> None:
     )
     uniform_df = pd.read_csv(uniform)
     selective_df = pd.read_csv(selective)
+    weakness_df = pd.read_csv(weakness)
     assert uniform_df["num_synthetic_images"].sum() == 6
     assert selective_df["num_synthetic_images"].sum() == 6
+    # The weakness plan spends the same budget: only the class set and the
+    # allocation weights differ, so budget can never confound the comparison.
+    assert weakness_df["num_synthetic_images"].sum() == 6
