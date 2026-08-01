@@ -145,12 +145,20 @@ def compute_long_tail_metrics(
             return 0
         return int((~df["kept"].astype(bool)).sum())
 
+    from src.utils.variants import KNOWN_BASE_VARIANTS, uses_synthetic_plan
+
     synthetic_counts = {"real_only": 0, "basic_aug": 0}
-    uniform_plan = analysis_dir / "augmentation_plan_uniform.csv"
     selective_plan = analysis_dir / "augmentation_plan_selective.csv"
     # Inpaint variants: realized accepted count (falls back to plan budget).
-    synthetic_counts["aug_uniform_inpaint"] = _realized_inpaint("uniform") or _plan_budget(uniform_plan)
-    synthetic_counts["aug_selective_inpaint"] = _realized_inpaint("selective") or _plan_budget(selective_plan)
+    # Derived from the variant registry rather than hardcoded per variant —
+    # aug_weakness_inpaint was added to the pipeline but missed here, so its
+    # synthetic_images reported 0 while the dataset actually held 1000 images.
+    for base in KNOWN_BASE_VARIANTS:
+        plan_name = uses_synthetic_plan(base)
+        if plan_name:
+            synthetic_counts[base] = _realized_inpaint(plan_name) or _plan_budget(
+                analysis_dir / f"augmentation_plan_{plan_name}.csv"
+            )
     # oversample/copy_paste hit their budget deterministically (no verification).
     if selective_plan.exists():
         selective_count = _plan_budget(selective_plan)
