@@ -68,7 +68,7 @@ The correlation is significantly *negative*: rarer classes are, on average, easi
 
 ### C. Error structure
 
-In the normalized confusion matrix of the baseline, the dominant off-diagonal mass is the *background* row — missed detections — across nearly all classes, consistent with recall (0.52–0.59) trailing precision (0.62–0.71). Inter-class confusion is secondary and concentrated in the visually similar fighter cluster (F15/F16/F18/F22/F35/JAS39). Two implications follow: (i) an augmentation that diversifies backgrounds attacks the dominant (miss) error mode; (ii) for the confusable-fighter cluster, background diversity can recover the recall component but not the discrimination component — an expectation our per-class results bear out (§VI-D).
+In the normalized confusion matrix of the baseline (Fig. 6), the dominant off-diagonal mass is the *background* row — missed detections — across nearly all classes, consistent with recall (0.52–0.59) trailing precision (0.62–0.71). Inter-class confusion is secondary and concentrated in the visually similar fighter cluster (F15/F16/F18/F22/F35/JAS39). Two implications follow: (i) an augmentation that diversifies backgrounds attacks the dominant (miss) error mode; (ii) for the confusable-fighter cluster, background diversity can recover the recall component but not the discrimination component — an expectation our per-class results bear out (§VI-D).
 
 ## IV. Method
 
@@ -85,6 +85,8 @@ Every generated image passes three gates or is rejected and regenerated from a d
 3. **Editable area**: sources with < 5% editable background are excluded up front.
 
 A run aborts if the failure rate exceeds 50%; in practice acceptance rates were 79–82% for all three arms (§V-C), so verification pass-rate differences cannot explain performance differences.
+
+Fig. 5 shows representative outputs. Backgrounds are replaced wholesale — urban skyline to airport runway (a), foliage to mountain cloudscape (b), airfield buildings to storm clouds (c) — while the protected aircraft, its pose, and its label are untouched. Fig. 5(d) documents the pipeline's characteristic failure mode: the gates verify that protected regions are unchanged and that the background *did* change, but they cannot detect a *new* aircraft hallucinated into the repainted background despite the negative prompt. Such objects enter training unlabeled and act as label noise; we quantify the exposure as bounded by the rejection statistics [TODO: manual audit of a 100-image sample to estimate the hallucination rate] and discuss the implication in §VII.
 
 ### C. Allocation policies
 
@@ -155,7 +157,7 @@ Selective-tail vs. uniform-tail on the tail scope: **+0.0030, p = 0.685**. Weigh
 
 ### D. Where background inpainting works and where it saturates
 
-Per-class results (Fig. 4 / Table [TODO]) align with the error analysis of §III-C. In the weakness set, classes whose failure was recall-dominated improve markedly under the weakness arm (EF2000 0.520→0.606 AP50; F16 0.574→0.661; C17 0.521→0.625), while the tight fighter cluster improves less — background diversity restores detection but not fine-grained discrimination (e.g., F14 0.365→0.324). This is consistent with the mechanism: inpainting varies context, not object appearance.
+Per-class results (Fig. 4) align with the error analysis of §III-C. In the weakness set, classes whose failure was recall-dominated improve markedly under the weakness arm (EF2000 0.520→0.606 AP50; F16 0.574→0.661; C17 0.521→0.625), while the tight fighter cluster improves less — background diversity restores detection but not fine-grained discrimination (e.g., F14 0.365→0.324). This is consistent with the mechanism: inpainting varies context, not object appearance.
 
 ### E. Honest baseline: resampling wins on absolute performance
 
@@ -169,6 +171,8 @@ RFS, at zero generation cost, is the best method in every scope (+0.082 all, +0.
 
 **Generation quality was gate-verified, not scored.** We verify each image against pixel-level gates and report near-identical acceptance rates across arms, but do not report FID/CLIPScore. [TODO: run `src/eval/synthetic_quality.py` and add a table — no retraining needed.]
 
+**Verification blind spot: background hallucination.** The pixel-level gates cannot detect aircraft hallucinated into the repainted background (Fig. 5(d)); such objects enter training without labels. Because all three arms share the identical generator, prompts, and gates, this noise source is matched across arms and cannot produce the differential (double-dissociation) effects of §VI-B — but it plausibly depresses the *absolute* gains of every inpainting arm, and is one candidate explanation for the gap to RFS, which introduces no synthetic pixels at all. An object-level gate (e.g., running the baseline detector on generated backgrounds and rejecting images with confident extra detections) is a direct fix we leave to future work.
+
 **Absolute gains are modest.** The best allocation arm adds ~0.03–0.06 mAP50-95 on its target set from 1,000 images. Whether gains scale with budget (2×, 5×), and whether allocation policies interact with budget size, is open. Composing RFS with weakness-allocated generation is the most promising follow-up suggested by our results.
 
 ## VIII. Conclusion
@@ -177,16 +181,21 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 
 ---
 
-## Figures (placeholder 목록)
+## Figures
 
-| # | 내용 | 소스 |
-|---|---|---|
-| Fig. 1 | 파이프라인 개요 (mask → inpaint → verify → allocate) | 신규 작도 |
-| Fig. 2 | instance count vs per-class AP 산점도 + 회귀선, r=−0.375 | `per_class_ap.csv` × `class_groups.csv` |
-| Fig. 3 | 이중 해리 2×2 막대 (arm × scope, 유의성 표기) | `statistical_tests.csv` |
-| Fig. 4 | weakness set 클래스별 AP 변화 (basic_aug → 각 arm) | `per_class_ap.csv` |
-| Fig. 5 | 생성 예시 (original / mask / generated) 3열 시트 | `synthetic/review_sheet_*.jpg` |
-| Table I | 데이터셋 통계 | `dataset_summary.csv` |
+| # | 내용 | 파일 | 상태 |
+|---|---|---|---|
+| Fig. 1 | 파이프라인 개요 (mask → inpaint → verify → allocate) | — | [TODO] 작도 |
+| Fig. 2 | instance count vs per-class AP 산점도, r=−0.375 (p=0.013) | `figures/fig2_freq_vs_ap.{pdf,png}` | 완료 |
+| Fig. 3 | 이중 해리 2×2 막대 (arm × scope, Wilcoxon 유의성) | `figures/fig3_double_dissociation.{pdf,png}` | 완료 |
+| Fig. 4 | weak set 13클래스 dumbbell (basic_aug → weakness arm, AP50) | `figures/fig4_weak_class_change.{pdf,png}` | 완료 |
+| Fig. 5 | 실제 생성 예시 4종 (original/mask/generated; (d)는 환각 실패 사례) | `figures/fig5_generation_examples.{pdf,png}` | 완료 |
+| Fig. 6 | baseline 정규화 confusion matrix (background 행 = 미검출 지배) | `figures/fig6_confusion_matrix_baseline.png` | 완료 (run 산출물) |
+| Table I | 데이터셋 통계 | `dataset_summary.csv` | 수치 확보 |
+
+그림 재생성: `scratchpad/make_figs.py` (데이터: GCS 최신 결과. 로컬 Drive의
+`outputs_full/metrics`는 GCP 학습 이전 상태이므로 사용 금지). 색은 Okabe-Ito
+기반 CVD-safe 팔레트로 validator 통과 확인.
 
 ## References (초안 — 투고 전 정확한 서지 확인 필수)
 
