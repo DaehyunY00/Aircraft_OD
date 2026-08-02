@@ -18,11 +18,22 @@
 
 박스 계산은 생성 파이프라인과 같은 helper(labels_to_pixel_boxes)를 쓴다.
 
+생성 로그의 source_image는 생성 당시의 절대경로(예: Colab/GCP VM의 /content/...)라
+다른 머신에서는 존재하지 않는다. --source-root를 주면 그 경로 아래를 파일명으로
+색인해 다시 매핑한다. 정규화가 원본 파일명을 보존하므로(normalize_yolo_dataset의
+_materialize_split) 원본 데이터셋을 직접 가리켜도 된다.
+
 사용:
+  # 생성 당시 머신에서
   python3 src/eval/audit_hallucination.py \
       --weights outputs_full/runs/basic_aug_.../weights/best.pt \
       --data /content/data/processed/base/data.yaml \
       --outputs outputs_full --per-plan 100
+
+  # 다른 머신에서 (원본 데이터셋만 있으면 됨)
+  python3 src/eval/audit_hallucination.py \
+      --weights .../best.pt --source-root /path/to/raw_dataset \
+      --outputs outputs_full --per-plan 150
 """
 
 from __future__ import annotations
@@ -69,11 +80,68 @@ def _extra_detections(model, image_path: Path, gts) -> int:
     return sum(1 for b in boxes if _max_containment(tuple(b), gts) < CONTAINMENT)
 
 
-def audit(weights: Path, data_yaml: Path, outputs: Path, per_plan: int, plans: list[str]) -> pd.DataFrame:
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def _index_by_name(root: Path, label: str) -> tuple[dict[str, Path], dict[str, Path]]:
+    """파일명 → 경로 색인. 이미지와 라벨을 따로 모은다.
+
+    생성 로그의 절대경로는 생성 당시 머신(Colab/GCP VM)의 것이라 다른 곳에서는
+    원본도 생성물도 존재하지 않는다. 파일명으로 다시 잇는다. 같은 이름이 여러
+    split에 있으면 먼저 만난 것을 쓴다 — 정규화는 원본을 복사만 하므로 내용이 같다.
+    """
+    images: dict[str, Path] = {}
+    labels: dict[str, Path] = {}
+    for path in Path(root).rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix in IMAGE_SUFFIXES:
+            images.setdefault(path.name, path)
+        elif suffix == ".txt":
+            labels.setdefault(path.stem, path)
+    print(f"[INFO] {label} 색인: 이미지 {len(images)}장, 라벨 {len(labels)}개")
+    return images, labels
+
+
+def audit(
+    weights: Path,
+    outputs: Path,
+    per_plan: int,
+    plans: list[str],
+    data_yaml: Path | None = None,
+    source_root: Path | None = None,
+    synthetic_root: Path | None = None,
+) -> pd.DataFrame:
     from ultralytics import YOLO
 
     model = YOLO(str(weights))
-    images_dir, labels_dir = _split_dirs(data_yaml)
+    images_dir = labels_dir = None
+    src_index: dict[str, Path] = {}
+    label_index: dict[str, Path] = {}
+    if source_root is not None:
+        src_index, label_index = _index_by_name(source_root, "source-root")
+    elif data_yaml is not None:
+        images_dir, labels_dir = _split_dirs(data_yaml)
+    else:
+        raise ValueError("--data 또는 --source-root 중 하나는 필요합니다.")
+    gen_index: dict[str, Path] = {}
+    if synthetic_root is not None:
+        gen_index, _ = _index_by_name(synthetic_root, "synthetic-root")
+
+    def _resolve(src: Path) -> tuple[Path | None, Path | None]:
+        if src_index:
+            image = src_index.get(src.name)
+            return image, (label_index.get(src.stem) if image else None)
+        if src.exists():
+            return src, label_path_for_image(src, images_dir, labels_dir)
+        return None, None
+
+    def _resolve_generated(gen: Path) -> Path | None:
+        if gen_index:
+            return gen_index.get(gen.name)
+        return gen if gen.exists() else None
+
     synthetic_dir = Path(outputs) / "synthetic"
     rows = []
     for plan in plans:
@@ -88,11 +156,12 @@ def audit(weights: Path, data_yaml: Path, outputs: Path, per_plan: int, plans: l
         sample = accepted.iloc[np.linspace(0, len(accepted) - 1, n).astype(int)]
         missing = 0
         for _, row in sample.iterrows():
-            src, gen = Path(row["source_image"]), Path(row["output_image"])
-            if not src.exists() or not gen.exists():
+            gen = _resolve_generated(Path(row["output_image"]))
+            src, label_path = _resolve(Path(row["source_image"]))
+            if src is None or label_path is None or gen is None:
                 missing += 1
                 continue
-            labels = read_yolo_labels(label_path_for_image(src, images_dir, labels_dir))
+            labels = read_yolo_labels(label_path)
             gts = labels_to_pixel_boxes(
                 labels, Image.open(gen).size, padding_ratio=float(row.get("mask_padding", 0.10) or 0.10)
             )
@@ -107,7 +176,7 @@ def audit(weights: Path, data_yaml: Path, outputs: Path, per_plan: int, plans: l
                     "extra_generated": _extra_detections(model, gen, gts),
                 }
             )
-        print(f"[INFO] {plan}: 표본 {n}장 중 {n - missing}장 감사 (경로 없음 {missing})")
+        print(f"[INFO] {plan}: 표본 {n}장 중 {n - missing}장 감사 (원본/생성물 미발견 {missing})")
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -134,7 +203,9 @@ def audit(weights: Path, data_yaml: Path, outputs: Path, per_plan: int, plans: l
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit background hallucination in generated images.")
     parser.add_argument("--weights", required=True, help="baseline detector weights (best.pt)")
-    parser.add_argument("--data", required=True, help="base data.yaml (source images/labels)")
+    parser.add_argument("--data", default=None, help="base data.yaml (생성 당시 머신에서)")
+    parser.add_argument("--source-root", default=None, help="원본 데이터셋 루트 (파일명으로 재매핑)")
+    parser.add_argument("--synthetic-root", default=None, help="생성물 루트 (파일명으로 재매핑)")
     parser.add_argument("--outputs", required=True, help="experiment outputs root")
     parser.add_argument("--per-plan", type=int, default=100, help="sample size per plan")
     parser.add_argument("--plans", default="uniform,selective,weakness")
@@ -145,10 +216,12 @@ def main() -> None:
     args = parse_args()
     audit(
         Path(args.weights),
-        Path(args.data),
         Path(args.outputs),
         args.per_plan,
         [p for p in args.plans.split(",") if p],
+        data_yaml=Path(args.data) if args.data else None,
+        source_root=Path(args.source_root) if args.source_root else None,
+        synthetic_root=Path(args.synthetic_root) if args.synthetic_root else None,
     )
 
 

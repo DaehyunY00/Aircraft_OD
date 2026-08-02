@@ -89,7 +89,24 @@ Every generated image passes three gates or is rejected and regenerated from a d
 
 A run aborts if the failure rate exceeds 50%; in practice acceptance rates were 79–82% for all three arms (§V-C), so verification pass-rate differences cannot explain performance differences.
 
-Fig. 5 shows representative outputs. Backgrounds are replaced wholesale — urban skyline to airport runway (a), foliage to mountain cloudscape (b), airfield buildings to storm clouds (c) — while the protected aircraft, its pose, and its label are untouched. Fig. 5(d) documents the pipeline's characteristic failure mode: the gates verify that protected regions are unchanged and that the background *did* change, but they cannot detect a *new* aircraft hallucinated into the repainted background despite the negative prompt. Such objects enter training unlabeled and act as label noise; we quantify the exposure as bounded by the rejection statistics [TODO: manual audit of a 100-image sample to estimate the hallucination rate] and discuss the implication in §VII.
+Fig. 5 shows representative outputs. Backgrounds are replaced wholesale — urban skyline to airport runway (a), foliage to mountain cloudscape (b), airfield buildings to storm clouds (c) — while the protected aircraft, its pose, and its label are untouched. Fig. 5(d) documents the pipeline's characteristic failure mode: the gates verify that protected regions are unchanged and that the background *did* change, but they cannot detect a *new* aircraft hallucinated into the repainted background despite a negative prompt that explicitly forbids extra, duplicate, and new aircraft. Such objects enter training unlabeled. §IV-D quantifies how often this happens.
+
+### D. How often does the background hallucinate aircraft?
+
+Because the failure is invisible to the pixel-level gates, we measure it directly. For a 450-image sample (150 per arm, evenly spaced over the accepted set), we run the `basic_aug` baseline detector on both the source and the generated image and count confident detections (conf ≥ 0.5) that fall outside every protected box. "Outside" uses containment rather than IoU — a small detection inside a large ground-truth box has near-zero IoU but is not a new object — with a 0.5 threshold on the fraction of the detection's own area that any padded ground-truth box covers. Scoring generated images alone would confound hallucinations with the detector's false positives, so the reported quantity is the per-image increase.
+
+| arm | extra objects per image (source → generated) | images gaining ≥1 | unlabeled objects added |
+|---|---|---|---|
+| uniform-tail | 0.000 → 0.307 | 12.7% | 46 |
+| selective-tail | 0.000 → 0.207 | 4.7% | 31 |
+| weakness | 0.007 → 0.353 | 13.3% | 52 |
+| **all** | **0.002 → 0.289** | **10.2%** | **130** |
+
+**One generated image in ten contains at least one unlabeled aircraft that the model invented.** The distribution is heavy-tailed: 27 of the 46 affected images gained a single object, but four gained 11–17, the worst cases being skies repainted into full formations (Fig. 7). Across arms the rate tracks the amount of repainting — LPIPS 0.244/0.262/0.272 against hallucination rates of 4.7%/12.7%/13.3% — consistent with a larger repainted area offering more opportunity to invent objects.
+
+Two checks support reading the increase as genuine hallucination rather than detector noise. First, the flagged regions were inspected visually (Fig. 7): the boxes sit on clearly rendered aircraft, not on texture artifacts. This matters because the source images are part of the detector's training data, so the near-zero source-side count is partly memorization and would otherwise inflate the delta. Second, the prompts ("aviation photography", "military airbase") plausibly invite the very objects the negative prompt forbids — the failure has an obvious mechanism.
+
+The consequence for training is specific: an unlabeled aircraft teaches the detector that an aircraft is background, which suppresses exactly the recall that §III-C identified as the dominant error mode. Because all three arms share one generator, prompts, and gates, this noise is matched across arms and cannot manufacture the differential result of §VI-B — but it plausibly caps the absolute gain available to every inpainting arm (§VII).
 
 ### C. Allocation policies
 
@@ -182,7 +199,9 @@ RFS, at zero generation cost, is the best method in every scope (+0.082 all, +0.
 
 **Single dataset and detector.** Results are demonstrated on one benchmark with YOLOv8n. The controlled-comparison design (fixed budget, disjoint sets) transfers directly to other datasets and detectors; the specific effect sizes may not.
 
-**Verification blind spot: background hallucination.** The pixel-level gates cannot detect aircraft hallucinated into the repainted background (Fig. 5(d)); such objects enter training without labels. Because all three arms share the identical generator, prompts, and gates, this noise source is matched across arms and cannot produce the differential (double-dissociation) effects of §VI-B — but it plausibly depresses the *absolute* gains of every inpainting arm, and is one candidate explanation for the gap to RFS, which introduces no synthetic pixels at all. An object-level gate (e.g., running the baseline detector on generated backgrounds and rejecting images with confident extra detections) is a direct fix we leave to future work.
+**Verification blind spot: background hallucination.** §IV-D measures it: 10.2% of generated images carry at least one unlabeled aircraft, 130 such objects across the 450-image audit. Because all three arms share the identical generator, prompts, and gates, this noise is matched across arms and cannot produce the differential result of §VI-B. It does, however, offer a concrete explanation for a puzzle in our results: the inpainting arms add background diversity but simultaneously inject false-negative supervision, and RFS — which re-exposes real images and adds no synthetic pixels — is free of this cost. We regard the gap to RFS (§VI-E) as partly attributable to it.
+
+The fix is direct and testable: an object-level gate that runs a detector over each generated image and rejects any with confident detections outside the protected regions, which is exactly the instrument used for the audit. Because the audit shows a heavy tail (four images contributing 54 of the 130 objects), even a permissive gate would remove most of the injected noise at a small yield cost. Re-running the three arms behind such a gate is the most direct test of how much of the diffusion-versus-resampling gap is label noise rather than a limitation of background augmentation itself. Reducing prompt-induced invention — the prompts name aviation scenes, which invites aircraft — is a complementary direction.
 
 **Absolute gains are modest.** The best allocation arm adds ~0.03–0.06 mAP50-95 on its target set from 1,000 images. Whether gains scale with budget (2×, 5×), and whether allocation policies interact with budget size, is open. Composing RFS with weakness-allocated generation is the most promising follow-up suggested by our results.
 
@@ -202,6 +221,7 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 | Fig. 4 | weak set 13클래스 dumbbell (basic_aug → weakness arm, AP50) | `figures/fig4_weak_class_change.{pdf,png}` | 완료 |
 | Fig. 5 | 실제 생성 예시 4종 (original/mask/generated; (d)는 환각 실패 사례) | `figures/fig5_generation_examples.{pdf,png}` | 완료 |
 | Fig. 6 | baseline 정규화 confusion matrix (background 행 = 미검출 지배) | `figures/fig6_confusion_matrix_baseline.png` | 완료 (run 산출물) |
+| Fig. 7 | 환각 사례 6종 (원본/생성 2행, 초록=보호 GT, 빨강=보호 밖 검출) | `figures/fig7_hallucination_examples.{pdf,png}` | 완료 |
 | Table I | 데이터셋 통계 | `dataset_summary.csv` | 수치 확보 |
 
 그림 재생성: `scratchpad/make_figs.py` (데이터: GCS 최신 결과. 로컬 Drive의

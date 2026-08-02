@@ -151,6 +151,35 @@ ModelOutput 반환) 때문에 CLIPScore는 transformers CLIP forward의
 100×cosine, ViT-L/14). FID/LPIPS는 CLI 정상 산출. 원자료
 `outputs_full/synthetic/{quality_report.csv, fid_by_class_*.csv}`.
 
+## 7.5 배경 환각 감사 (2026-08-03, 측정 완료)
+
+검증 관문이 못 잡는 실패 유형. baseline 검출기를 원본/생성본에 각각 돌려
+보호 박스 밖 검출의 **증가분**을 측정(arm당 150장, 총 450장).
+
+| arm | 이미지당 여분 검출 (원본→생성) | ≥1개 추가된 이미지 | 추가된 미라벨 객체 |
+|---|---|---|---|
+| uniform | 0.000 → 0.307 | 12.7% | 46 |
+| selective | 0.000 → 0.207 | 4.7% | 31 |
+| weakness | 0.007 → 0.353 | 13.3% | 52 |
+| **전체** | **0.002 → 0.289** | **10.2%** | **130** |
+
+- **생성 이미지 10장 중 1장에 라벨 없는 항공기가 들어 있다.** 분포는 heavy-tail:
+  46장 중 27장은 1개, 그러나 4장은 11~17개(하늘이 편대로 채워진 사례).
+- 재도색 면적과 단조 관계: LPIPS 0.244/0.262/0.272 ↔ 환각률 4.7/12.7/13.3%.
+- **시각 검증 완료**(`paper/figures/fig7_hallucination_examples.png`): 빨간 박스가
+  실제 항공기 형상 위에 정확히 얹힘 → 검출기 노이즈 아님. 원본 쪽 0.000은
+  검출기가 그 원본으로 학습된 암기 효과가 섞여 있으므로 하한으로 읽어야 하며,
+  시각 검증이 이 우려를 해소한다.
+- 학습 영향: 미라벨 객체 = "이 항공기는 배경"이라는 거짓 감독 → §2에서 확인한
+  지배적 오류(미검출)를 정확히 악화시킨다. 세 arm에 동일하게 걸리므로 이중
+  해리는 만들 수 없지만, **inpainting arm 전체의 절대 이득 상한**과 RFS와의
+  격차를 설명하는 유력 후보.
+- 후속: object-level gate(생성물에 검출기를 돌려 보호 밖 확신 검출이 있으면 기각)로
+  재실행하면 "확산 vs 재샘플링 격차 중 얼마가 라벨 노이즈인가"를 직접 검정 가능.
+  감사 도구가 곧 그 gate다(`src/eval/audit_hallucination.py`).
+
+원자료: `outputs_full/analysis/hallucination_audit{,_summary}.csv`
+
 ## 8. 재현 정보
 
 - 코드: <https://github.com/DaehyunY00/Aircraft_OD> (`53e26c4`)
