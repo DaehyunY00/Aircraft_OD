@@ -185,7 +185,7 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 
 | # | 내용 | 파일 | 상태 |
 |---|---|---|---|
-| Fig. 1 | 파이프라인 개요 (mask → inpaint → verify → allocate) | — | [TODO] 작도 |
+| Fig. 1 | 파이프라인 개요 (Stage 1 배분=실험변수 / Stage 2 생성·검증=공통, 실제 생성 이미지 썸네일 포함) | `figures/fig1_pipeline.{pdf,png}` | 완료 |
 | Fig. 2 | instance count vs per-class AP 산점도, r=−0.375 (p=0.013) | `figures/fig2_freq_vs_ap.{pdf,png}` | 완료 |
 | Fig. 3 | 이중 해리 2×2 막대 (arm × scope, Wilcoxon 유의성) | `figures/fig3_double_dissociation.{pdf,png}` | 완료 |
 | Fig. 4 | weak set 13클래스 dumbbell (basic_aug → weakness arm, AP50) | `figures/fig4_weak_class_change.{pdf,png}` | 완료 |

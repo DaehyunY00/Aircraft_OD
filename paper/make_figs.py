@@ -178,6 +178,78 @@ for rr, lab in enumerate(["Original", "Mask", "Generated"]):
 fig.subplots_adjust(wspace=0.04, hspace=0.06)
 save(fig, "fig5_generation_examples")
 
+# ---------------------------------------------------------------- Fig 1
+# 파이프라인 개요. Stage 1(배분 = 실험 변수) / Stage 2(생성·검증 = 모든 arm 공통).
+# 썸네일은 실제 리뷰 시트의 한 행(urban → runway)을 그대로 사용.
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+
+def box(ax, x0, x1, y0, y1, text, ec="#555555", fc="white", fs=6.8, lw=0.8, weight="normal"):
+    ax.add_patch(FancyBboxPatch((x0, y0), x1 - x0, y1 - y0,
+                                boxstyle="round,pad=0.35", ec=ec, fc=fc, lw=lw))
+    ax.text((x0 + x1) / 2, (y0 + y1) / 2, text, ha="center", va="center",
+            fontsize=fs, weight=weight, color="#222222")
+
+
+def arrow(ax, p0, p1, rad=0.0, color="#555555", lw=0.9):
+    ax.add_patch(FancyArrowPatch(p0, p1, connectionstyle=f"arc3,rad={rad}",
+                                 arrowstyle="-|>", mutation_scale=8,
+                                 color=color, lw=lw, shrinkA=0, shrinkB=0))
+
+
+fig, ax = plt.subplots(figsize=(7.16, 3.1))
+ax.set_xlim(0, 100); ax.set_ylim(0, 44); ax.axis("off")
+
+ax.text(1, 42.4, "Stage 1 · Budget allocation — the experimental variable",
+        fontsize=7.5, weight="bold", color="#333333")
+box(ax, 1.5, 18, 35, 40, "Class frequency\n(instance counts)", fs=6.3)
+box(ax, 1.5, 18, 28.5, 33.5, "Measured per-class AP\n(baseline · val split)", fs=6.3)
+box(ax, 26, 56, 37.5, 41.2, "Uniform-tail: equal over 13 freq-tail classes",
+    ec="#8a8a8a", fc="#f2f2f2", fs=6.4)
+box(ax, 26, 56, 32.4, 36.1, "Selective-tail: rarity + weakness, same 13",
+    ec=C_SEL, fc="#E8F1F8", fs=6.4, lw=1.2)
+box(ax, 26, 56, 27.3, 31.0, "Weakness: bottom-13 of all 43 by measured AP",
+    ec=C_WEAK, fc="#FBEAE0", fs=6.4, lw=1.2)
+box(ax, 64, 80, 31, 37.5, "Per-class budgets\nB = 1,000 · K = 13", weight="bold", fs=6.6)
+arrow(ax, (18.7, 38.4), (25.2, 39.4), rad=-0.10)
+arrow(ax, (18.7, 36.8), (25.2, 34.8), rad=0.10)
+arrow(ax, (18.7, 32.4), (25.2, 33.8), rad=-0.08)
+arrow(ax, (18.7, 30.4), (25.2, 29.2), rad=0.08)
+arrow(ax, (56.8, 39.3), (63.2, 35.8), rad=-0.10)
+arrow(ax, (56.8, 34.2), (63.2, 34.2))
+arrow(ax, (56.8, 29.1), (63.2, 32.6), rad=0.10)
+# 예산 → 생성 루프: elbow (chip·caption과 안 겹치는 y=23 차선 사용)
+ax.plot([72, 72], [30.4, 23], color=GRAY, lw=0.8)
+ax.plot([72, 7], [23, 23], color=GRAY, lw=0.8)
+arrow(ax, (7, 23), (7, 20.4), color=GRAY, lw=0.8)
+ax.text(40, 23.8, "per-class quota drives the loop", fontsize=6.2, color=GRAY,
+        style="italic", ha="center")
+
+thumbs = cells(SHEETS / "review_sheet_weakness.jpg", 5)
+for (x0, cap), im in zip([(2, "Source + GT boxes"), (17, "Mask (pad · blur)"),
+                          (32, "Inpainted (20 steps)")], thumbs):
+    ax.imshow(im, extent=(x0, x0 + 10, 10, 20), aspect="auto", zorder=2)
+    ax.add_patch(plt.Rectangle((x0, 10), 10, 10, fill=False, ec="#999999", lw=0.5, zorder=3))
+    ax.text(x0 + 5, 8.9, cap, ha="center", va="top", fontsize=5.6, color="#222222")
+arrow(ax, (12.3, 15), (16.7, 15))
+arrow(ax, (27.3, 15), (31.7, 15))
+arrow(ax, (42.3, 15), (46.0, 15))
+box(ax, 46.5, 62, 10.5, 19.5,
+    "Verification gates\nΔ background ≥ 10\nΔ protected box ≤ 5\neditable bg ≥ 5 %", fs=6.2)
+arrow(ax, (62.6, 15), (68.0, 15))
+ax.text(65.3, 16.2, "accept", ha="center", fontsize=5.8, color="#222222")
+box(ax, 68.5, 83, 10.5, 19.5, "Synthetic train\nimages +\nunchanged labels", fs=6.4)
+arrow(ax, (83.6, 15), (86.0, 15))
+box(ax, 86.5, 99, 10.5, 19.5, "YOLOv8n per arm\n→ scoped eval\n(all · tail · weak)", fs=6.2)
+ax.plot([54, 54], [10.0, 5], color=GRAY, lw=0.8)
+ax.plot([54, 7], [5, 5], color=GRAY, lw=0.8)
+arrow(ax, (7, 5), (7, 9.6), color=GRAY, lw=0.8)
+ax.text(30.5, 3.2, "reject → resample source & seed (≤ 2× budget)", ha="center",
+        fontsize=6.2, color=GRAY, style="italic")
+ax.text(1, 0.4, "Stage 2 · Label-preserving generation & verification — identical for every arm",
+        fontsize=7.5, weight="bold", color="#333333")
+save(fig, "fig1_pipeline")
+
 # ---------------------------------------------------------------- 부속 자료 복사
 import shutil
 
