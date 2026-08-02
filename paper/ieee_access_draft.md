@@ -2,9 +2,12 @@
 
 **Authors:** Daehyun Yoo [+ co-authors/affiliation TBD]
 
-> IEEE Access 투고용 초안 v0.1 (2026-08-01).
+> 초안 v0.2 (2026-08-02). **타겟 저널: IJASS** (Int. J. Aeronautical & Space
+> Sciences, Springer/KSAS — hybrid, 구독 경로 게재비 무료). v0.1은 IEEE Access
+> 대상이었으나 게재비 조건으로 전환 — 내용은 그대로, 투고 직전 IJASS 서식·분량
+> 규격(참고문헌 스타일 포함)으로 조판 필요. 항공 응용 저널이므로 Introduction의
+> 도메인 프레이밍(군용기 인식 응용)을 반 문단 보강하면 좋음.
 > 모든 수치는 RESULTS.md에서 검증된 값. [TODO] 표시는 투고 전 채울 것.
-> 그림은 placeholder — 목록은 §Figures 참조.
 
 ---
 
@@ -123,6 +126,16 @@ YOLOv8n, 640 px, 50 epochs, patience 15, auto batch. Baselines `real_only` and `
 
 We report scope-restricted macro mAP50-95 over three class sets — *all* (43), *tail* (13, frequency-defined), *weak* (13, weakness-plan-defined) — and Wilcoxon signed-rank tests on class-paired per-class AP (seed-averaged), the appropriate paired test given per-class difficulty heterogeneity. Realized synthetic counts equal the plan budget for all arms (1,000/1,000 accepted), with acceptance rates 81.8% (uniform), 80.8% (selective), 79.4% (weakness) over 1,223–1,260 attempts.
 
+**Generation-quality metrics.** Table [TODO: number] scores the accepted images: CLIPScore (CLIP ViT-L/14, 100 × cosine between image and its generation prompt; 200-image sample per arm), LPIPS between source and generated image (degree of background change), and class-conditional FID against real images of the same classes.
+
+| arm | acceptance | CLIPScore ↑ | LPIPS (src↔gen) | FID ↓ (overall) | FID per-class median |
+|---|---|---|---|---|---|
+| uniform-tail | 81.8% | 19.6 ± 3.3 | 0.262 | 89.7 | 83.2 |
+| selective-tail | 80.8% | 19.1 ± 3.8 | 0.244 | 87.7 | 91.2 |
+| weakness | 79.4% | 20.2 ± 3.4 | 0.272 | 100.4 | 103.7 |
+
+Three observations. (i) CLIPScore and LPIPS are matched across arms — the generator behaves identically regardless of which classes it serves. (ii) The two same-class-set arms (uniform, selective) have near-identical overall FID (89.7 vs 87.7), a sanity check on the controlled design. (iii) The weakness arm's FID is moderately higher (100.4): its head/medium source images contain cluttered multi-aircraft and ground scenes, so wholesale background replacement departs further from the real class distribution. Critically, the arm with the *worst* generation fidelity still produced the significant target-scope gain of §VI-B — fidelity differences run *against* the weakness arm and therefore cannot explain the dissociation. (Small-sample FID with 76–200 images per class is upward-biased; values should be read comparatively, not absolutely.)
+
 ## VI. Results
 
 ### A. Main results
@@ -168,8 +181,6 @@ RFS, at zero generation cost, is the best method in every scope (+0.082 all, +0.
 **Scope of the frequency–difficulty inversion.** Our benchmark's imbalance ratio is 10.5 with a minimum of 86 instances per class. In extreme long-tail regimes (LVIS-scale, 1000×, few-shot tail classes) frequency plausibly regains predictive power, and the weakness signal itself becomes unreliable (AP estimates on few-shot classes are noisy). Our claim is therefore conditional: *when* frequency and measured difficulty decouple — which practitioners can test with one correlation before generating anything — allocation should follow measured difficulty.
 
 **Single dataset and detector.** Results are demonstrated on one benchmark with YOLOv8n. The controlled-comparison design (fixed budget, disjoint sets) transfers directly to other datasets and detectors; the specific effect sizes may not.
-
-**Generation quality was gate-verified, not scored.** We verify each image against pixel-level gates and report near-identical acceptance rates across arms, but do not report FID/CLIPScore. [TODO: run `src/eval/synthetic_quality.py` and add a table — no retraining needed.]
 
 **Verification blind spot: background hallucination.** The pixel-level gates cannot detect aircraft hallucinated into the repainted background (Fig. 5(d)); such objects enter training without labels. Because all three arms share the identical generator, prompts, and gates, this noise source is matched across arms and cannot produce the differential (double-dissociation) effects of §VI-B — but it plausibly depresses the *absolute* gains of every inpainting arm, and is one candidate explanation for the gap to RFS, which introduces no synthetic pixels at all. An object-level gate (e.g., running the baseline detector on generated backgrounds and rejecting images with confident extra detections) is a direct fix we leave to future work.
 

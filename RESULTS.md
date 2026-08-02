@@ -133,10 +133,23 @@ tail +0.0911, weak +0.1133을 얻어 확산 기반 arm들(+0.015~0.032)을 크�
 instances. LVIS(1000×)급 분포에서는 §2의 음의 상관이 재현되지 않을 수 있다.
 결론의 일반화 범위를 이 조건에 한정해야 한다.
 
-**7.4 생성 품질 지표 미측정.** FID/CLIPScore를 산출하지 못했다(학습을
-`--skip-inpaint`로 실행해 품질 채점 단계를 건너뜀). 세 arm의 관문 통과율이
-79~82%로 고르다는 점이 간접 증거이나, 정량 지표는 별도 실행이 필요하다.
-`src/eval/synthetic_quality.py` CLI로 재학습 없이 산출 가능하다.
+**7.4 생성 품질 지표 — 측정 완료 (2026-08-02).** arm당 200장 표본, GCP L4:
+
+| arm | CLIPScore | LPIPS(원본↔생성) | FID overall | FID per-class 중앙값 |
+|---|---|---|---|---|
+| uniform | 19.6 ± 3.3 | 0.262 | 89.7 | 83.2 |
+| selective | 19.1 ± 3.8 | 0.244 | 87.7 | 91.2 |
+| weakness | 20.2 ± 3.4 | 0.272 | 100.4 | 103.7 |
+
+CLIP/LPIPS는 arm 간 동등(생성기 동작 동일 확인), uniform·selective FID 동등(통제
+확인), weakness FID만 ~12 높음(head/medium 원본의 다중 기체·클러터 장면 때문).
+**FID가 가장 나쁜 arm이 자기 scope에서 유의한 이득을 냈으므로 충실도 차이는
+이중 해리를 설명할 수 없다** — 오히려 주장을 보강. 산출 방법 주의: VM의
+torchmetrics/transformers 비호환(신버전 transformers의 `get_image_features`가
+ModelOutput 반환) 때문에 CLIPScore는 transformers CLIP forward의
+`logits_per_image / logit_scale` 경로로 직접 계산(정의는 torchmetrics와 동일:
+100×cosine, ViT-L/14). FID/LPIPS는 CLI 정상 산출. 원자료
+`outputs_full/synthetic/{quality_report.csv, fid_by_class_*.csv}`.
 
 ## 8. 재현 정보
 
