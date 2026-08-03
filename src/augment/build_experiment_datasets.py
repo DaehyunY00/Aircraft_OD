@@ -315,19 +315,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selective-plan", default=None)
     parser.add_argument("--synthetic-root", default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="쉼표로 구분한 variant 이름만 빌드. 이미 만들어 둔 데이터셋을 건드리지 않고 "
+        "일부만 추가할 때 쓴다(설정 파일의 variants 목록을 대체).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    variants = cfg.get("experiments", {}).get("variants")
+    if args.only:
+        requested = [v.strip() for v in args.only.split(",") if v.strip()]
+        unknown = [v for v in requested if variants and v not in variants]
+        if unknown:
+            raise ValueError(f"--only에 설정 파일의 variants에 없는 이름이 있습니다: {unknown}")
+        variants = requested
     build_experiment_datasets(
         args.base_data,
         args.experiments_root or cfg["paths"]["experiments_data"],
         uniform_plan=args.uniform_plan,
         selective_plan=args.selective_plan,
         synthetic_root=args.synthetic_root,
-        variants=cfg.get("experiments", {}).get("variants"),
+        variants=variants,
         overwrite=args.overwrite,
         config=cfg,
     )
