@@ -54,7 +54,7 @@ These works establish the premise this paper starts from, and two differences de
 
 **Copy-paste and compositional augmentation.** Copy-paste [Ghiasi et al., CVPR 2021] and its scaled variants (X-Paste [Zhao et al., ICML 2023], Gen2Det [Suri et al., 2023]) compose scenes from object crops. They change object context but introduce boundary artifacts and require paste-placement heuristics; copy-paste is the weakest augmentation arm in our study.
 
-**Diffusion-based augmentation for detection.** Text-to-image and inpainting diffusion models have been used to expand detection training sets [Trabucco et al., ICLR 2024]. Class-specific fine-tuned diffusion models have been applied to military object detection in low-data regimes [Fokkinga et al., 2026], though with uniform per-class allocation (150 images per class) and full-image generation rather than inpainting. Background inpainting around protected ground-truth boxes is attractive for detection specifically because annotations transfer without relabeling; we adopt this generator, hold it fixed across arms, and vary only the allocation of its budget.
+**Diffusion-based augmentation for detection.** Text-to-image and inpainting diffusion models have been used to expand detection training sets [Trabucco et al., ICLR 2024]. Class-specific fine-tuned diffusion models have been applied to military object detection in low-data regimes [Fokkinga et al., 2026], though with uniform per-class allocation (150 images per class) and full-image generation rather than inpainting. Within the aerospace literature, generative augmentation has been used to address imbalance directly: Bae et al. [2024] synthesize infrared imagery from RGB with CycleGAN to compensate for a scarce modality in drone-based human detection. That line of work asks whether to generate; the question here is where a generation budget should be pointed once the decision to generate has been made. Background inpainting around protected ground-truth boxes is attractive for detection specifically because annotations transfer without relabeling; we adopt this generator, hold it fixed across arms, and vary only the allocation of its budget.
 
 **Label noise in synthetic training data.** Work on synthetic-data quality has largely focused on realism metrics (FID, CLIPScore) and on filtering by aesthetic or alignment scores. The failure we measure is different in kind: the generated content is realistic, passes pixel-level protection checks, and is nonetheless mislabeled, because the generator adds an object that the transferred annotation does not cover. §IV-D quantifies the rate and §VII proposes the object-level gate that would remove it.
 
@@ -283,7 +283,17 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 
 [15] F. Wilcoxon, "Individual comparisons by ranking methods," *Biometrics Bulletin*, vol. 1, no. 6, pp. 80–83, 1945.
 
-**[TODO] 추가 검토 대상**
+**투고 저널(IJASS) 게재 선행 연구 — Crossref로 서지 확인 완료**
 
-- 군용기 인식 응용 선행 연구 2–3편 (IJASS 게재 논문 포함 권장 — 투고 저널의 기존 문헌을 인용하는 것이 관례상 유리)
-- [14]의 저자 표기는 Ultralytics 공식 인용 형식을 확인해 확정할 것
+[16] S. Bae, H. Shin, H. Kim, M. Park, M.-Y. Choi, and H. Oh, "Deep learning-based human detection using RGB and IR images from drones," *Int. J. Aeronaut. Space Sci.*, vol. 25, no. 1, pp. 164–175, 2024, doi: 10.1007/s42405-023-00632-1. — **IJASS 내 가장 가까운 선행.** CycleGAN으로 RGB→IR 영상을 생성해 데이터 불균형에 대응. 생성 증강을 항공 도메인에서 쓴 사례이며, 본 연구가 "생성 여부"가 아니라 "생성 예산의 배분"을 묻는다는 점에서 갈린다 (§II에 한 문장 추가할 것)
+
+[17] S.-H. Kim and H.-L. Choi, "Convolutional neural network-based multi-target detection and recognition method for unmanned airborne surveillance systems," *Int. J. Aeronaut. Space Sci.*, vol. 20, no. 4, pp. 1038–1046, 2019, doi: 10.1007/s42405-019-00182-5. — 항공 감시에서의 다중 표적 검출·인식
+
+[18] H. Lee, S. Cho, H. Shin, S. Kim, and D. H. Shim, "Small airborne object recognition with image processing for feature extraction," *Int. J. Aeronaut. Space Sci.*, vol. 26, no. 1, pp. 220–234, 2025, doi: 10.1007/s42405-024-00765-x. — 소형 공중 물체 인식
+
+[19] H. Zhang, Y. Zhang, Q. Feng, and K. Zhang, "Review of machine-learning approaches for object and component detection in space electro-optical satellites," *Int. J. Aeronaut. Space Sci.*, vol. 25, no. 1, pp. 277–292, 2024, doi: 10.1007/s42405-023-00653-w. — 항공우주 광학 영상 객체 검출 서베이
+
+**[TODO] 남은 것**
+
+- [16]을 §II "Diffusion-based augmentation for detection" 절에 편입하는 문장 작성 — 항공 도메인 독자에게 본 연구의 위치를 잡아주는 역할
+- [14] Ultralytics 공식 인용 형식 확인
