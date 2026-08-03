@@ -21,34 +21,42 @@ Synthetic data generation with diffusion models has become a popular remedy for 
 
 ## I. Introduction
 
-Object detectors degrade on under-represented classes, and a growing line of work responds by synthesizing additional training images with generative models. In these pipelines a design decision is made — usually implicitly — before a single image is generated: *which classes get the synthetic budget?* The near-universal answer is the rare classes, on the assumption that frequency ranks difficulty.
+Object detectors degrade on under-represented classes, and a growing line of work responds by synthesizing additional training images with generative models. Before a single image is generated, such a pipeline must answer a question that is usually settled by convention rather than measurement: *which classes receive the synthetic budget?*
 
-This paper examines that assumption on a realistic fine-grained benchmark, the 43-class Military Aircraft Detection dataset, and finds it inverted. Under a strong YOLOv8 baseline with default augmentation, per-class AP correlates negatively with instance count (r = −0.375). The rarest class in the frequency-defined tail (YF23, 97 instances) is the *easiest* class in the entire dataset (0.93 AP50), while the weakest classes — Rafale (0.31), F14 (0.37), JAS39 and F18 (0.49) — sit in the medium and head groups. The reason is visible in the confusion structure: distinctive airframes are easy regardless of frequency, whereas visually similar multirole fighters are hard regardless of abundance, and the dominant error mode is missed detection rather than inter-class confusion.
+The conventional answer is the rare classes. It is not, however, the only answer on record. Difficulty-Net [Sinha et al., WACV 2023] argues that reweighting by frequency overlooks categories that are intrinsically hard to learn, and ObjectAug [Zhang et al., 2021] compared rarity-driven against hard-driven category coefficients for segmentation augmentation on PASCAL VOC, reporting that the hard-driven ranking was the more effective of the two by 0.8 points. More recently, uncertainty-guided context augmentation [Anonymous, 2026] preserves the regions on which a segmenter is least certain and regenerates the surrounding context with a diffusion model — allocating by model uncertainty rather than by frequency. The direction of travel in this literature is therefore already established: *measured difficulty appears to be a better allocation signal than counting instances.*
 
-If frequency does not rank difficulty, then a generation budget aimed at the frequency tail is aimed at the wrong target. We turn this observation into a controlled experiment. Using a fixed budget of 1,000 synthetic images produced by one generation pipeline — background inpainting that repaints the scene around protected ground-truth boxes, so labels transfer unchanged — we vary only the *allocation signal*:
+What remains unclear is what that superiority actually consists of, and whether it survives the move from segmentation to detection. Prior comparisons report an aggregate margin — one policy scores higher overall — on class partitions that overlap, so a gain observed under a difficulty-driven policy may reflect either better targeting or simply a better ranking of largely the same classes. This paper separates those readings.
 
-1. **Uniform-tail**: equal allocation over the 13 frequency-tail classes;
-2. **Selective-tail**: rarity-and-weakness-weighted allocation over the same 13 classes;
-3. **Weakness**: all 43 classes re-ranked by measured baseline AP, budget allocated to the bottom 13.
+We work on the 43-class Military Aircraft Detection benchmark, where the decoupling between frequency and difficulty is unusually sharp. Under a YOLOv8 baseline with default augmentation, per-class AP correlates *negatively* with instance count (Pearson r = −0.375, p = 0.013; Spearman ρ = −0.408, p = 0.007). The rarest class in the frequency-defined tail (YF23, 97 instances) is the easiest class in the dataset (0.93 AP50), while the weakest — Rafale (0.31), F14 (0.37), JAS39 and F18 (0.49) — sit in the medium and head groups. Distinctive airframes are easy regardless of frequency; visually similar multirole fighters are hard regardless of abundance. The consequence is a property we exploit rather than merely report: on this benchmark, ranking all classes by measured AP and taking the bottom K yields a class set **disjoint** from the frequency tail of the same size.
 
-On this dataset the weakness policy selects a class set *disjoint* from the frequency tail (7 head + 6 medium classes), which makes the comparison unusually clean: same budget, same class count, same generator, different signal.
+That disjointness turns the comparison into a controlled experiment. Holding the generation budget (1,000 images), the class count (13), the generator, and the verification gates fixed, we vary only the allocation signal:
+
+1. **Uniform-tail** — equal allocation over the 13 frequency-tail classes;
+2. **Selective-tail** — rarity-and-weakness-weighted allocation over the same 13 classes;
+3. **Weakness** — all 43 classes re-ranked by measured baseline AP, budget to the bottom 13.
+
+Evaluating every policy on *both* class sets, rather than reporting a single aggregate, changes the conclusion. The two policies are statistically indistinguishable overall (p = 0.154); what separates them is *where* their gains land.
 
 **Contributions.**
 
-- We document, with significance testing, a benchmark where class frequency is a *negative* predictor of class difficulty, and analyze why (distinctive-airframe rarity vs. confusable-fighter abundance; miss-dominated errors).
-- We isolate the allocation signal as the experimental variable and find a **double dissociation**: each policy significantly improves exactly the class set it targets (frequency policy: tail +0.056 mAP50-95, p = 0.0017; weakness policy: weak set +0.037, p = 0.040) and not the other.
-- We show that **within-set reweighting is ineffectual**: weighting by rarity and weakness inside a fixed class set is statistically indistinguishable from uniform allocation (p = 0.685). The choice *of* the set dominates the shaping *within* it.
-- We report an honest baseline comparison in which repeat-factor sampling — at zero generation cost — outperforms all diffusion-based arms in absolute terms, and we delineate when generation-based augmentation is and is not the appropriate tool.
+- We report a benchmark on which class frequency is a statistically significant *negative* predictor of class difficulty, and analyze the mechanism (distinctive-airframe rarity versus confusable-fighter abundance, with miss-dominated errors).
+- We refine the prior rarity-versus-difficulty finding into a **double dissociation**. Under a fixed budget and disjoint class sets, each policy significantly improves exactly the set it targets and not the other (frequency policy on its tail: +0.056 mAP50-95, p = 0.0017, but +0.018 on the weak set, n.s.; weakness policy on the weak set: +0.037, p = 0.040, but +0.017 on the tail, n.s.). Difficulty-driven allocation is not globally superior — it is differently targeted.
+- We show that **within-set reweighting is ineffectual**: weighting the same 13 classes by rarity and weakness is indistinguishable from uniform allocation (p = 0.685). Choosing the set dominates shaping the weights inside it.
+- We **quantify a failure mode of background inpainting** that the standard pixel-level verification cannot see: 10.2% of generated images contain an aircraft the model invented and no annotation covers, injecting false-negative supervision. To our knowledge this label-noise channel has not been measured for protected-region inpainting, and it offers a concrete explanation for why every generative arm here trails repeat-factor sampling.
 
 ## II. Related Work
 
-**Resampling for long-tailed detection.** Repeat-factor sampling (RFS) [Gupta et al., LVIS 2019] and class-balanced oversampling remain strong, nearly free baselines for imbalanced detection. Our results reinforce this: RFS is the strongest method in our study in absolute mAP. Our contribution is orthogonal — we study how to spend a *generation* budget when one is used.
+**Resampling and reweighting for long-tailed detection.** Repeat-factor sampling [Gupta et al., LVIS 2019], class-balanced oversampling, and classifier-side corrections such as balanced group softmax [Li et al., CVPR 2020] and logit normalization [Zhao et al., 2022] remain strong and nearly free baselines. Our results reinforce their standing: RFS is the strongest method in our study in absolute terms (§VI-E). Our question is orthogonal — given that a generation budget is being spent, where should it go.
 
-**Copy-paste and compositional augmentation.** Simple copy-paste [Ghiasi et al., 2021] and its scaled variants (X-Paste [TODO cite], Gen2Det [TODO cite]) compose new scenes from object crops. These change object context but can produce boundary artifacts and require paste-placement heuristics; in our experiments copy-paste is the weakest augmentation arm.
+**Difficulty rather than frequency as the target signal.** Difficulty-Net [Sinha et al., WACV 2023] learns to predict per-class difficulty and reweights the loss accordingly, on the premise that frequency-based reweighting misses intrinsically hard categories. ObjectAug [Zhang et al., 2021] applies the same intuition to augmentation allocation, comparing rarity-driven and hard-driven category coefficients for object-level segmentation augmentation and finding the hard-driven ranking more effective. Uncertainty-guided context augmentation [Anonymous, 2026] allocates by per-class predictive entropy, preserving uncertain regions and regenerating surrounding context with a diffusion model on Cityscapes, UAVID and BDD100K.
 
-**Diffusion-based augmentation.** Recent work generates training images with text-to-image or inpainting diffusion models [Trabucco et al., DA-Fusion, TODO verify; He et al., TODO verify]. Background inpainting around protected ground-truth boxes [Li et al., ECCV 2024, TODO verify exact citation] is attractive for detection because annotations transfer without relabeling. We adopt this generator and hold it fixed; our variable is not the generator but the allocation of its budget.
+These works establish the premise this paper starts from, and two differences define our contribution. First, all three address segmentation or classification; we test detection, where the supervision unit is a box and an unlabeled object becomes a false negative rather than a mislabeled pixel. Second, and more substantively, they report aggregate margins over partially overlapping class partitions. We hold budget and class count fixed, exploit a benchmark where the two candidate class sets are disjoint, and evaluate each policy on both sets — which converts "difficulty-driven is better" into the more specific and more useful "each signal moves its own classes."
 
-**Class-difficulty-aware training.** Loss reweighting and curriculum methods use per-class performance signals during training [TODO cite 1-2]. We use the same signal one level earlier — to decide *where synthetic data goes* — and show it changes where the gains land.
+**Copy-paste and compositional augmentation.** Copy-paste [Ghiasi et al., CVPR 2021] and its scaled variants (X-Paste [Zhao et al., ICML 2023], Gen2Det [Suri et al., 2024]) compose scenes from object crops. They change object context but introduce boundary artifacts and require paste-placement heuristics; copy-paste is the weakest augmentation arm in our study.
+
+**Diffusion-based augmentation for detection.** Text-to-image and inpainting diffusion models have been used to expand detection training sets [Trabucco et al., DA-Fusion, ICLR 2024; Fang et al., controllable diffusion, 2024]. Class-specific fine-tuned diffusion models have been applied to military object detection in low-data regimes [Anonymous, 2026], though with uniform per-class allocation (150 images per class) and full-image generation rather than inpainting. Background inpainting around protected ground-truth boxes is attractive for detection specifically because annotations transfer without relabeling; we adopt this generator, hold it fixed across arms, and vary only the allocation of its budget.
+
+**Label noise in synthetic training data.** Work on synthetic-data quality has largely focused on realism metrics (FID, CLIPScore) and on filtering by aesthetic or alignment scores. The failure we measure is different in kind: the generated content is realistic, passes pixel-level protection checks, and is nonetheless mislabeled, because the generator adds an object that the transferred annotation does not cover. §IV-D quantifies the rate and §VII proposes the object-level gate that would remove it.
 
 ## III. Benchmark Analysis: Frequency Is Not Difficulty
 
@@ -230,10 +238,24 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 
 ## References (초안 — 투고 전 정확한 서지 확인 필수)
 
-1. A. Gupta, P. Dollár, R. Girshick, "LVIS: A dataset for large vocabulary instance segmentation," CVPR 2019. (RFS)
-2. G. Ghiasi et al., "Simple copy-paste is a strong data augmentation method for instance segmentation," CVPR 2021.
-3. R. Rombach et al., "High-resolution image synthesis with latent diffusion models," CVPR 2022.
-4. Ultralytics YOLOv8, https://github.com/ultralytics/ultralytics
-5. [TODO] X-Paste (ICML 2023?), Gen2Det, DA-Fusion, Li et al. ECCV 2024 background inpainting — 정확한 서지 확인
-6. [TODO] 군용 항공기 인식 응용 선행 연구 2–3편 (IJASS/KIMST 계열 포함 권장)
-7. F. Wilcoxon, "Individual comparisons by ranking methods," 1945.
+**핵심 선행 연구 (신규성 위치 설정에 필수 — 누락 시 심사에서 치명적)**
+
+1. S. Sinha et al., "Difficulty-Net: Learning to predict difficulty for long-tailed recognition," WACV 2023. — 빈도 재가중이 본질적으로 어려운 클래스를 놓친다는 주장의 출처
+2. J. Zhang et al., "ObjectAug: Object-level data augmentation for semantic image segmentation," 2021 (arXiv:2102.00221). — **rarity-driven vs hard-driven 배분 비교의 직접적 선행**. 전문에서 실험 설계(집합 중첩 여부, 예산 고정 여부)를 확인해 §II 서술을 확정할 것
+3. [TODO 저자] "Preserve the hard, regenerate the rest: Uncertainty-guided synthetic training data augmentation with diffusion models," 2026 (arXiv:2606.31603). — 불확실성 기반 배분 + 보호 영역 주변 맥락 재생성
+
+**배경**
+
+4. A. Gupta, P. Dollár, R. Girshick, "LVIS: A dataset for large vocabulary instance segmentation," CVPR 2019. (RFS)
+5. Y. Li et al., "Overcoming classifier imbalance for long-tail object detection with balanced group softmax," CVPR 2020.
+6. G. Ghiasi et al., "Simple copy-paste is a strong data augmentation method for instance segmentation," CVPR 2021.
+7. R. Rombach et al., "High-resolution image synthesis with latent diffusion models," CVPR 2022.
+8. B. Trabucco et al., "Effective data augmentation with diffusion models," ICLR 2024. (DA-Fusion)
+9. [TODO] X-Paste (ICML 2023), Gen2Det — 정확한 서지
+10. [TODO 저자] "Class-specific diffusion models improve military object detection in a low-data domain," 2026 (arXiv:2604.18076). — 같은 응용 도메인, 균등 배분·전체 생성 방식
+11. Ultralytics YOLOv8, https://github.com/ultralytics/ultralytics
+12. F. Wilcoxon, "Individual comparisons by ranking methods," Biometrics Bulletin, 1945.
+
+**향후 확장 시**
+
+13. W. Yu et al., "MAR20: A benchmark for military aircraft recognition in remote sensing images," Journal of Remote Sensing, 2022. — 2차 데이터셋 후보
