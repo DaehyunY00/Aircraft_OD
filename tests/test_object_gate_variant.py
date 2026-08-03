@@ -40,3 +40,31 @@ def test_gate_reader_absent_file_is_none_not_empty(tmp_path) -> None:
     # None과 빈 집합을 구분해야 한다. 빈 집합이면 '아무것도 제외 안 함'으로
     # 조용히 통과해 게이트가 걸리지 않은 데이터셋이 만들어진다.
     assert object_gate_dropped_names(tmp_path / "missing.csv") is None
+
+
+def test_gated_variant_without_log_dir_fails_loudly(tmp_path) -> None:
+    """게이트 CSV 위치를 모르면 빌드를 멈춰야 한다.
+
+    이전 구현은 generation_log_dir 가 없으면 synthetic_root 로 조용히 대체했는데,
+    거기엔 CSV가 없어 엉뚱한 경로를 가리켰다. 같은 누락이 accepted-names 필터도
+    꺼버려 기각된 이미지가 학습에 섞일 수 있었다.
+    """
+    import pytest
+
+    from src.augment.build_experiment_datasets import build_experiment_datasets
+
+    base = tmp_path / "base"
+    (base / "images" / "train").mkdir(parents=True)
+    (base / "labels" / "train").mkdir(parents=True)
+    (tmp_path / "data.yaml").write_text(
+        f"path: {base}\ntrain: images/train\nval: images/train\ntest: images/train\nnc: 1\nnames:\n  0: a\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="generation_log_dir"):
+        build_experiment_datasets(
+            tmp_path / "data.yaml",
+            tmp_path / "exp",
+            variants=["aug_uniform_inpaint_og"],
+            synthetic_root=tmp_path / "syn",
+            generation_log_dir=None,
+        )

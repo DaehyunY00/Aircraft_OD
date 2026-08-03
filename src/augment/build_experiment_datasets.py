@@ -272,7 +272,12 @@ def build_experiment_datasets(
                         "kept 컬럼이 없습니다. 품질 채점/필터링 단계를 먼저 실행하세요."
                     )
             if spec.object_gate:
-                gate_csv = Path(generation_log_dir or synthetic_root) / f"object_gate_{plan_name}.csv"
+                if generation_log_dir is None:
+                    raise ValueError(
+                        f"{variant}: object-gate variant인데 generation_log_dir가 없습니다. "
+                        "게이트 CSV는 생성 로그와 같은 디렉터리(outputs/synthetic)에 있습니다."
+                    )
+                gate_csv = Path(generation_log_dir) / f"object_gate_{plan_name}.csv"
                 gate_drop = object_gate_dropped_names(gate_csv)
                 if gate_drop is None:
                     raise FileNotFoundError(
@@ -321,6 +326,12 @@ def parse_args() -> argparse.Namespace:
         help="쉼표로 구분한 variant 이름만 빌드. 이미 만들어 둔 데이터셋을 건드리지 않고 "
         "일부만 추가할 때 쓴다(설정 파일의 variants 목록을 대체).",
     )
+    parser.add_argument(
+        "--generation-log-dir",
+        default=None,
+        help="생성 로그와 object_gate CSV가 있는 디렉터리. 기본값은 설정의 outputs/synthetic. "
+        "이걸 놓치면 accepted-names 필터가 조용히 꺼져 기각된 이미지까지 학습에 들어간다.",
+    )
     return parser.parse_args()
 
 
@@ -334,6 +345,9 @@ def main() -> None:
         if unknown:
             raise ValueError(f"--only에 설정 파일의 variants에 없는 이름이 있습니다: {unknown}")
         variants = requested
+    # run_pipeline 은 outputs/synthetic 을 넘긴다. CLI 기본값을 같게 맞춰야
+    # 두 경로로 만든 데이터셋이 달라지지 않는다.
+    log_dir = args.generation_log_dir or (Path(cfg["paths"]["outputs"]) / "synthetic")
     build_experiment_datasets(
         args.base_data,
         args.experiments_root or cfg["paths"]["experiments_data"],
@@ -343,6 +357,7 @@ def main() -> None:
         variants=variants,
         overwrite=args.overwrite,
         config=cfg,
+        generation_log_dir=log_dir,
     )
 
 
