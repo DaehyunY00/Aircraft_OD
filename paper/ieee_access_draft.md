@@ -203,7 +203,15 @@ RFS, at zero generation cost, is the best method in every scope (+0.082 all, +0.
 
 ## VII. Discussion and Limitations
 
-**Scope of the frequency–difficulty inversion.** Our benchmark's imbalance ratio is 10.5 with a minimum of 86 instances per class. In extreme long-tail regimes (LVIS-scale, 1000×, few-shot tail classes) frequency plausibly regains predictive power, and the weakness signal itself becomes unreliable (AP estimates on few-shot classes are noisy). Our claim is therefore conditional: *when* frequency and measured difficulty decouple — which practitioners can test with one correlation before generating anything — allocation should follow measured difficulty.
+**Scope of the frequency–difficulty inversion — measured, not assumed.** Our benchmark's imbalance ratio is 10.5 with a minimum of 86 instances per class, so the natural question is whether the inversion survives a heavier tail. We tested it. A 103-class release of the same photographic collection (which contains 99.4% of our images plus 11,904 more, at imbalance 140.3× and a minimum of 11 train instances) was used to train an identical baseline, and per-class AP was re-measured under the same protocol. Three results follow.
+
+First, the inversion **reproduces** on the shared classes: restricted to the same 43 categories, the independently trained 103-class model gives r = −0.389 (p = 0.010), Spearman ρ = −0.506 (p = 0.001), closely matching the −0.375 reported in §III-B. The effect is therefore not an artifact of one training run or of our label granularity.
+
+Second, across all 103 classes the correlation **vanishes** rather than reversing: r = +0.044 (p = 0.661). This is not tail-estimation noise — restricting to classes with at least 50, 100, or 200 training instances gives +0.050, −0.058, and −0.108, all non-significant.
+
+Third, and most usefully, **in neither regime does frequency positively predict difficulty**. The conventional assumption underlying rarity-driven allocation is contradicted at moderate imbalance and unsupported at severe imbalance. The practical prescription in §VIII is therefore not "frequency is inverted" but the weaker and more portable "frequency should be verified, not assumed."
+
+The design consequence is a genuine limitation. What makes our comparison controlled is that the frequency tail and the measured-weak set are disjoint; on the 103-class set they overlap by 38.7% (12 of 31), so the same clean contrast is unavailable there and we do not report an allocation experiment on it. Establishing the double dissociation on a second, genuinely independent benchmark — MAR20 [Yu et al., 2023] is the natural aerospace candidate, though its overhead remote-sensing imagery gives background inpainting far less to vary — remains open.
 
 **Single dataset and detector.** Results are demonstrated on one benchmark with YOLOv8n. The controlled-comparison design (fixed budget, disjoint sets) transfers directly to other datasets and detectors; the specific effect sizes may not.
 
