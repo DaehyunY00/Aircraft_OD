@@ -171,6 +171,14 @@ def compute_long_tail_metrics(
             from src.utils.variants import parse_variant, uses_synthetic_plan
 
             spec = parse_variant(str(experiment))
+            if spec.object_gate:
+                # 게이트는 전량 판정이므로 보관 수가 곧 실현 예산이다.
+                plan = uses_synthetic_plan(spec.base)
+                gate_csv = synthetic_dir / f"object_gate_{plan}.csv" if plan else None
+                if gate_csv is not None and gate_csv.exists():
+                    gate_df = pd.read_csv(gate_csv)
+                    if "kept" in gate_df.columns:
+                        return int(gate_df["kept"].astype(bool).sum())
             if spec.quality_filter:
                 plan = uses_synthetic_plan(spec.base)
                 if plan:

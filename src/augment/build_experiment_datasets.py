@@ -108,6 +108,21 @@ def quality_kept_names(quality_filter_csv: Path) -> set[str] | None:
     return {Path(str(p)).name for p in df.loc[df["kept"].astype(bool), "image"]}
 
 
+def object_gate_dropped_names(gate_csv: Path) -> set[str] | None:
+    """Object-level gate가 기각한 파일 이름. 없으면 None.
+
+    게이트는 생성물 전량을 검사하므로(품질 필터와 달리 표본이 아님) 기각 목록이
+    곧 전체 판정이다. 그래도 kept==False 만 뽑아 제외하는 방식은 동일하게 쓴다 —
+    새 파일이 나중에 추가돼도 목록에 없다는 이유로 통째로 빠지지 않게 하기 위함.
+    """
+    if not gate_csv.exists():
+        return None
+    df = pd.read_csv(gate_csv)
+    if "kept" not in df.columns or "image" not in df.columns:
+        return None
+    return {Path(str(p)).name for p in df.loc[~df["kept"].astype(bool), "image"]}
+
+
 def quality_dropped_names(quality_filter_csv: Path) -> set[str] | None:
     """File names explicitly DROPPED by the quality filter, or None when absent.
 
@@ -256,6 +271,17 @@ def build_experiment_datasets(
                         f"{variant}: {quality_filter_dir}/quality_filter_{plan_name}.csv가 없거나 "
                         "kept 컬럼이 없습니다. 품질 채점/필터링 단계를 먼저 실행하세요."
                     )
+            if spec.object_gate:
+                gate_csv = Path(generation_log_dir or synthetic_root) / f"object_gate_{plan_name}.csv"
+                gate_drop = object_gate_dropped_names(gate_csv)
+                if gate_drop is None:
+                    raise FileNotFoundError(
+                        f"{variant}: {gate_csv}가 없거나 kept/image 컬럼이 없습니다. "
+                        "먼저 src/eval/audit_hallucination.py --gate 를 실행하세요."
+                    )
+                # 두 필터가 함께 걸리면(_qf_og) 합집합을 제외한다.
+                exclude = gate_drop if exclude is None else (exclude | gate_drop)
+                print(f"[INFO] {variant}: object gate가 {len(gate_drop)}장 제외")
             added = add_synthetic_split(
                 synthetic_root / plan_name, variant_root, overwrite=overwrite,
                 include_names=log_names, exclude_names=exclude,

@@ -44,6 +44,10 @@ KNOWN_BASE_VARIANTS = (
 
 _SUFFIX_FLAGS = {
     "qf": "quality_filter",
+    # 생성 배경에 만들어진 라벨 없는 객체를 검출기로 걸러낸 세트. CLIPScore 기반
+    # _qf 와는 거르는 대상이 다르다 — _qf 는 '못 만든' 이미지를, _og 는 '잘 만들었지만
+    # 라벨이 없는 객체가 들어간' 이미지를 뺀다. 후자가 학습에 거짓 음성으로 작용한다.
+    "og": "object_gate",
 }
 
 
@@ -52,6 +56,7 @@ class VariantSpec:
     name: str
     base: str
     quality_filter: bool = False
+    object_gate: bool = False
 
 
 def parse_variant(name: str) -> VariantSpec:

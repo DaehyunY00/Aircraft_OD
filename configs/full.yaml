@@ -118,3 +118,10 @@ experiments:
     - aug_uniform_inpaint
     - aug_selective_inpaint
     - aug_weakness_inpaint
+    # object-level gate 적용본(_og). 배경에 라벨 없는 항공기가 생성된 이미지를
+    # 검출기로 걸러낸 세트로, 라벨 노이즈가 RFS 열세를 얼마나 설명하는지 검정한다.
+    # 예산이 arm마다 다르다(915/918/835) — 게이트 탈락률이 다르기 때문. 따라서
+    # 이 셋으로 이중 해리를 다시 주장하지 말 것. arm 내 gated↔ungated 비교용이다.
+    - aug_uniform_inpaint_og
+    - aug_selective_inpaint_og
+    - aug_weakness_inpaint_og
