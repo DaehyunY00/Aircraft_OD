@@ -23,7 +23,7 @@ Synthetic data generation with diffusion models has become a popular remedy for 
 
 Object detectors degrade on under-represented classes, and a growing line of work responds by synthesizing additional training images with generative models. Before a single image is generated, such a pipeline must answer a question that is usually settled by convention rather than measurement: *which classes receive the synthetic budget?*
 
-The conventional answer is the rare classes. It is not, however, the only answer on record. Difficulty-Net [Sinha et al., WACV 2023] argues that reweighting by frequency overlooks categories that are intrinsically hard to learn, and ObjectAug [Zhang et al., 2021] compared rarity-driven against hard-driven category coefficients for segmentation augmentation on PASCAL VOC, reporting that the hard-driven ranking was the more effective of the two by 0.8 points. More recently, uncertainty-guided context augmentation [Anonymous, 2026] preserves the regions on which a segmenter is least certain and regenerates the surrounding context with a diffusion model — allocating by model uncertainty rather than by frequency. The direction of travel in this literature is therefore already established: *measured difficulty appears to be a better allocation signal than counting instances.*
+The conventional answer is the rare classes. It is not, however, the only answer on record. Difficulty-Net [Sinha and Ohashi, WACV 2023] argues that reweighting by frequency overlooks categories that are intrinsically hard to learn, and ObjectAug [Zhang et al., 2021] compared rarity-driven against hard-driven category coefficients for segmentation augmentation on PASCAL VOC, reporting that the hard-driven ranking was the more effective of the two by 0.8 points. More recently, uncertainty-guided context augmentation [Röhrich et al., 2026] preserves the regions on which a segmenter is least certain and regenerates the surrounding context with a diffusion model — allocating by model uncertainty rather than by frequency. The direction of travel in this literature is therefore already established: *measured difficulty appears to be a better allocation signal than counting instances.*
 
 What remains unclear is what that superiority actually consists of, and whether it survives the move from segmentation to detection. Prior comparisons report an aggregate margin — one policy scores higher overall — on class partitions that overlap, so a gain observed under a difficulty-driven policy may reflect either better targeting or simply a better ranking of largely the same classes. This paper separates those readings.
 
@@ -48,13 +48,13 @@ Evaluating every policy on *both* class sets, rather than reporting a single agg
 
 **Resampling and reweighting for long-tailed detection.** Repeat-factor sampling [Gupta et al., LVIS 2019], class-balanced oversampling, and classifier-side corrections such as balanced group softmax [Li et al., CVPR 2020] and logit normalization [Zhao et al., 2022] remain strong and nearly free baselines. Our results reinforce their standing: RFS is the strongest method in our study in absolute terms (§VI-E). Our question is orthogonal — given that a generation budget is being spent, where should it go.
 
-**Difficulty rather than frequency as the target signal.** Difficulty-Net [Sinha et al., WACV 2023] learns to predict per-class difficulty and reweights the loss accordingly, on the premise that frequency-based reweighting misses intrinsically hard categories. ObjectAug [Zhang et al., 2021] applies the same intuition to augmentation allocation, comparing rarity-driven and hard-driven category coefficients for object-level segmentation augmentation and finding the hard-driven ranking more effective. Uncertainty-guided context augmentation [Anonymous, 2026] allocates by per-class predictive entropy, preserving uncertain regions and regenerating surrounding context with a diffusion model on Cityscapes, UAVID and BDD100K.
+**Difficulty rather than frequency as the target signal.** Difficulty-Net [Sinha and Ohashi, WACV 2023] learns to predict per-class difficulty and reweights the loss accordingly, on the premise that frequency-based reweighting misses intrinsically hard categories. ObjectAug [Zhang et al., 2021] applies the same intuition to augmentation allocation, comparing rarity-driven and hard-driven category coefficients for object-level segmentation augmentation and finding the hard-driven ranking more effective. Uncertainty-guided context augmentation [Röhrich et al., 2026] allocates by per-class predictive entropy, preserving uncertain regions and regenerating surrounding context with a diffusion model on Cityscapes, UAVID and BDD100K.
 
 These works establish the premise this paper starts from, and two differences define our contribution. First, all three address segmentation or classification; we test detection, where the supervision unit is a box and an unlabeled object becomes a false negative rather than a mislabeled pixel. Second, and more substantively, they report aggregate margins over partially overlapping class partitions. We hold budget and class count fixed, exploit a benchmark where the two candidate class sets are disjoint, and evaluate each policy on both sets — which converts "difficulty-driven is better" into the more specific and more useful "each signal moves its own classes."
 
-**Copy-paste and compositional augmentation.** Copy-paste [Ghiasi et al., CVPR 2021] and its scaled variants (X-Paste [Zhao et al., ICML 2023], Gen2Det [Suri et al., 2024]) compose scenes from object crops. They change object context but introduce boundary artifacts and require paste-placement heuristics; copy-paste is the weakest augmentation arm in our study.
+**Copy-paste and compositional augmentation.** Copy-paste [Ghiasi et al., CVPR 2021] and its scaled variants (X-Paste [Zhao et al., ICML 2023], Gen2Det [Suri et al., 2023]) compose scenes from object crops. They change object context but introduce boundary artifacts and require paste-placement heuristics; copy-paste is the weakest augmentation arm in our study.
 
-**Diffusion-based augmentation for detection.** Text-to-image and inpainting diffusion models have been used to expand detection training sets [Trabucco et al., DA-Fusion, ICLR 2024; Fang et al., controllable diffusion, 2024]. Class-specific fine-tuned diffusion models have been applied to military object detection in low-data regimes [Anonymous, 2026], though with uniform per-class allocation (150 images per class) and full-image generation rather than inpainting. Background inpainting around protected ground-truth boxes is attractive for detection specifically because annotations transfer without relabeling; we adopt this generator, hold it fixed across arms, and vary only the allocation of its budget.
+**Diffusion-based augmentation for detection.** Text-to-image and inpainting diffusion models have been used to expand detection training sets [Trabucco et al., ICLR 2024]. Class-specific fine-tuned diffusion models have been applied to military object detection in low-data regimes [Fokkinga et al., 2026], though with uniform per-class allocation (150 images per class) and full-image generation rather than inpainting. Background inpainting around protected ground-truth boxes is attractive for detection specifically because annotations transfer without relabeling; we adopt this generator, hold it fixed across arms, and vary only the allocation of its budget.
 
 **Label noise in synthetic training data.** Work on synthetic-data quality has largely focused on realism metrics (FID, CLIPScore) and on filtering by aesthetic or alignment scores. The failure we measure is different in kind: the generated content is realistic, passes pixel-level protection checks, and is nonetheless mislabeled, because the generator adds an object that the transferred annotation does not cover. §IV-D quantifies the rate and §VII proposes the object-level gate that would remove it.
 
@@ -236,26 +236,54 @@ On a 43-class military aircraft benchmark where class frequency is a significant
 `outputs_full/metrics`는 GCP 학습 이전 상태이므로 사용 금지). 색은 Okabe-Ito
 기반 CVD-safe 팔레트로 validator 통과 확인.
 
-## References (초안 — 투고 전 정확한 서지 확인 필수)
+## References
 
-**핵심 선행 연구 (신규성 위치 설정에 필수 — 누락 시 심사에서 치명적)**
+> 2026-08-03 확정. 저자·게재처·연도를 원문(arXiv abs, CVF/PMLR/저널 페이지)에서 직접
+> 확인함. 미게재 프리프린트는 학회명을 붙이지 않고 arXiv로만 표기 — 없는 게재처를
+> 적는 것이 심사에서 가장 나쁜 종류의 오류다. IJASS 서식(번호·약어 규칙)에 맞춘
+> 최종 조판은 투고 직전에 한 번 더 통과시킬 것.
 
-1. S. Sinha et al., "Difficulty-Net: Learning to predict difficulty for long-tailed recognition," WACV 2023. — 빈도 재가중이 본질적으로 어려운 클래스를 놓친다는 주장의 출처
-2. J. Zhang et al., "ObjectAug: Object-level data augmentation for semantic image segmentation," 2021 (arXiv:2102.00221). — **rarity-driven vs hard-driven 배분 비교의 직접적 선행**. 전문에서 실험 설계(집합 중첩 여부, 예산 고정 여부)를 확인해 §II 서술을 확정할 것
-3. [TODO 저자] "Preserve the hard, regenerate the rest: Uncertainty-guided synthetic training data augmentation with diffusion models," 2026 (arXiv:2606.31603). — 불확실성 기반 배분 + 보호 영역 주변 맥락 재생성
+**핵심 선행 연구 — 신규성 위치 설정에 필수 (§I, §II)**
 
-**배경**
+[1] S. Sinha and H. Ohashi, "Difficulty-Net: Learning to predict difficulty for long-tailed recognition," in *Proc. IEEE/CVF Winter Conf. Appl. Comput. Vis. (WACV)*, Jan. 2023, pp. 6444–6453. (arXiv:2209.02960)
 
-4. A. Gupta, P. Dollár, R. Girshick, "LVIS: A dataset for large vocabulary instance segmentation," CVPR 2019. (RFS)
-5. Y. Li et al., "Overcoming classifier imbalance for long-tail object detection with balanced group softmax," CVPR 2020.
-6. G. Ghiasi et al., "Simple copy-paste is a strong data augmentation method for instance segmentation," CVPR 2021.
-7. R. Rombach et al., "High-resolution image synthesis with latent diffusion models," CVPR 2022.
-8. B. Trabucco et al., "Effective data augmentation with diffusion models," ICLR 2024. (DA-Fusion)
-9. [TODO] X-Paste (ICML 2023), Gen2Det — 정확한 서지
-10. [TODO 저자] "Class-specific diffusion models improve military object detection in a low-data domain," 2026 (arXiv:2604.18076). — 같은 응용 도메인, 균등 배분·전체 생성 방식
-11. Ultralytics YOLOv8, https://github.com/ultralytics/ultralytics
-12. F. Wilcoxon, "Individual comparisons by ranking methods," Biometrics Bulletin, 1945.
+[2] J. Zhang, Y. Zhang, and X. Xu, "ObjectAug: Object-level data augmentation for semantic image segmentation," in *Proc. Int. Joint Conf. Neural Netw. (IJCNN)*, 2021. (arXiv:2102.00221) — **희소성 기반 vs 난이도 기반 배분 비교의 직접적 선행.** 우리 §II의 차별화 서술이 이 논문에 걸려 있으므로, 전문에서 두 클래스 집합의 중첩 여부와 예산 고정 여부를 확인해 서술을 확정할 것
 
-**향후 확장 시**
+[3] N. Röhrich, J. Gleißner, A. H. A. Ibrahim, S. Mertes, and T. Huber, "Preserve the hard, regenerate the rest: Uncertainty-guided synthetic training data augmentation with diffusion models," arXiv:2606.31603, Jun. 2026. — 불확실성 기반 배분 + 보호 영역 주변 맥락 재생성. **프리프린트(게재처 없음)**
 
-13. W. Yu et al., "MAR20: A benchmark for military aircraft recognition in remote sensing images," Journal of Remote Sensing, 2022. — 2차 데이터셋 후보
+**Long-tail 검출: 재샘플링·재가중**
+
+[4] A. Gupta, P. Dollár, and R. Girshick, "LVIS: A dataset for large vocabulary instance segmentation," in *Proc. IEEE/CVF Conf. Comput. Vis. Pattern Recognit. (CVPR)*, 2019, pp. 5356–5364. (RFS)
+
+[5] Y. Li, T. Wang, B. Kang, S. Tang, C. Wang, J. Li, and J. Feng, "Overcoming classifier imbalance for long-tail object detection with balanced group softmax," in *Proc. CVPR*, 2020, pp. 10991–11000.
+
+[6] L. Zhao, Y. Teng, and L. Wang, "Logit normalization for long-tail object detection," arXiv:2203.17020, Mar. 2022. **프리프린트**
+
+**합성·조합 증강**
+
+[7] G. Ghiasi, Y. Cui, A. Srinivas, R. Qian, T.-Y. Lin, E. D. Cubuk, Q. V. Le, and B. Zoph, "Simple copy-paste is a strong data augmentation method for instance segmentation," in *Proc. CVPR*, 2021, pp. 2918–2928.
+
+[8] H. Zhao, D. Sheng, J. Bao, D. Chen, D. Chen, F. Wen, L. Yuan, C. Liu, W. Zhou, Q. Chu, W. Zhang, and N. Yu, "X-Paste: Revisiting scalable copy-paste for instance segmentation using CLIP and StableDiffusion," in *Proc. Int. Conf. Mach. Learn. (ICML)*, PMLR vol. 202, 2023.
+
+[9] S. Suri, F. Xiao, A. Sinha, S. C. Culatana, R. Krishnamoorthi, C. Zhu, and A. Shrivastava, "Gen2Det: Generate to detect," arXiv:2312.04566, Dec. 2023. **프리프린트 — 학회 게재 아님**
+
+[10] B. Trabucco, K. Doherty, M. Gurinas, and R. Salakhutdinov, "Effective data augmentation with diffusion models," in *Proc. Int. Conf. Learn. Represent. (ICLR)*, 2024. (arXiv:2302.07944)
+
+**생성 모델·도메인**
+
+[11] R. Rombach, A. Blattmann, D. Lorenz, P. Esser, and B. Ommer, "High-resolution image synthesis with latent diffusion models," in *Proc. CVPR*, 2022, pp. 10684–10695.
+
+[12] E. P. Fokkinga, J. E. van Woerden, T. A. Eker, S. P. Snel, E. I. S. Hofmeijer, K. Schutte, and F. G. Heslinga, "Class-specific diffusion models improve military object detection in a low-data domain," arXiv:2604.18076, Apr. 2026. **SPIE Defense + Security 투고 중** — 같은 응용 도메인, 균등 배분·전체 이미지 생성
+
+[13] W. Yu, G. Cheng, M. Wang, Y. Yao, X. Xie, X. Yao, and J. Han, "MAR20: A benchmark for military aircraft recognition in remote sensing images," *Nat. Remote Sens. Bull.*, vol. 27, no. 12, pp. 2688–2696, 2023, doi: 10.11834/jrs.20222139. — 촬영 조건(위성)이 다른 교차 검증 후보 (§VII)
+
+**도구·통계**
+
+[14] G. Jocher, A. Chaurasia, and J. Qiu, "Ultralytics YOLOv8," 2023. [Online]. Available: https://github.com/ultralytics/ultralytics
+
+[15] F. Wilcoxon, "Individual comparisons by ranking methods," *Biometrics Bulletin*, vol. 1, no. 6, pp. 80–83, 1945.
+
+**[TODO] 추가 검토 대상**
+
+- 군용기 인식 응용 선행 연구 2–3편 (IJASS 게재 논문 포함 권장 — 투고 저널의 기존 문헌을 인용하는 것이 관례상 유리)
+- [14]의 저자 표기는 Ultralytics 공식 인용 형식을 확인해 확정할 것
