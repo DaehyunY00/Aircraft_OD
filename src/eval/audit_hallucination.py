@@ -50,6 +50,7 @@ for _parent in Path(__file__).resolve().parents:
 import numpy as np
 import pandas as pd
 from PIL import Image
+from tqdm import tqdm
 
 from src.augment.inpaint_background import _split_dirs
 from src.augment.masks import labels_to_pixel_boxes
@@ -200,8 +201,108 @@ def audit(
     return df
 
 
+def gate(
+    weights: Path,
+    outputs: Path,
+    plans: list[str],
+    source_root: Path | None = None,
+    data_yaml: Path | None = None,
+    synthetic_root: Path | None = None,
+    max_extra: int = 0,
+) -> pd.DataFrame:
+    """Object-level gate: 생성물 전량을 검사해 보관/기각 목록을 만든다.
+
+    감사(audit)가 원본과 짝지어 '증가분'을 재는 반면, 게이트는 생성물만 보는
+    한쪽짜리 규칙이다. 그래도 타당한 이유는 감사에서 원본 쪽 여분 검출이
+    0.002/장으로 사실상 0이었기 때문 — 검출기가 실제 이미지의 보호 영역 밖에서
+    발화하는 일은 거의 없다. 따라서 생성물에서의 발화는 대부분 생성 산물이다.
+
+    max_extra=0 이면 보호 영역 밖 확신 검출이 하나라도 있으면 기각한다.
+    감사에서 확인된 heavy-tail(영향 이미지 46장 중 4장이 전체 130개 중 54개를
+    차지) 때문에, 느슨한 임계값으로도 노이즈 대부분을 걷어낼 수 있다.
+    """
+    from ultralytics import YOLO
+
+    model = YOLO(str(weights))
+    images_dir = labels_dir = None
+    src_index: dict[str, Path] = {}
+    label_index: dict[str, Path] = {}
+    if source_root is not None:
+        src_index, label_index = _index_by_name(source_root, "source-root")
+    elif data_yaml is not None:
+        images_dir, labels_dir = _split_dirs(data_yaml)
+    else:
+        raise ValueError("--data 또는 --source-root 중 하나는 필요합니다.")
+    gen_index: dict[str, Path] = {}
+    if synthetic_root is not None:
+        gen_index, _ = _index_by_name(synthetic_root, "synthetic-root")
+
+    synthetic_dir = Path(outputs) / "synthetic"
+    rows = []
+    for plan in plans:
+        log_path = synthetic_dir / f"generation_log_{plan}.csv"
+        if not log_path.exists():
+            print(f"[WARN] {log_path} 없음 — 건너뜀")
+            continue
+        accepted = pd.read_csv(log_path)
+        accepted = accepted[accepted["accepted"].astype(bool)]
+        skipped = 0
+        for _, row in tqdm(list(accepted.iterrows()), desc=f"gate {plan}"):
+            gen = Path(row["output_image"])
+            gen = gen_index.get(gen.name) if gen_index else (gen if gen.exists() else None)
+            src = Path(row["source_image"])
+            if src_index:
+                src_resolved = src_index.get(src.name)
+                label_path = label_index.get(src.stem) if src_resolved else None
+            else:
+                src_resolved = src if src.exists() else None
+                label_path = label_path_for_image(src, images_dir, labels_dir) if src_resolved else None
+            if gen is None or label_path is None:
+                skipped += 1
+                continue
+            labels = read_yolo_labels(label_path)
+            gts = labels_to_pixel_boxes(
+                labels, Image.open(gen).size, padding_ratio=float(row.get("mask_padding", 0.10) or 0.10)
+            )
+            n_extra = _extra_detections(model, gen, gts)
+            rows.append(
+                {
+                    "plan": plan,
+                    "image": str(gen),
+                    "class_name": row.get("class_name", ""),
+                    "n_extra": n_extra,
+                    "kept": n_extra <= max_extra,
+                }
+            )
+        if skipped:
+            print(f"[WARN] {plan}: 경로를 찾지 못해 건너뛴 {skipped}장")
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("[ERROR] 검사할 생성물이 없습니다.")
+        return df
+    ensure_dir(synthetic_dir)
+    for plan, group in df.groupby("plan"):
+        # 데이터셋 빌더의 exclude_names 경로가 읽는 형식(image, kept)과 동일하게 쓴다.
+        group.to_csv(synthetic_dir / f"object_gate_{plan}.csv", index=False)
+    summary = df.groupby("plan").agg(
+        n=("kept", "size"),
+        kept=("kept", "sum"),
+        dropped=("kept", lambda s: int((~s).sum())),
+        drop_pct=("kept", lambda s: float((~s).mean() * 100)),
+        extra_objects_removed=("n_extra", lambda s: int(s[s > max_extra].sum())),
+    )
+    summary.to_csv(synthetic_dir / "object_gate_summary.csv")
+    print(f"[INFO] 저장: {synthetic_dir}/object_gate_{{<plan>,summary}}.csv")
+    print(summary.to_string())
+    print(f"\n예산 정렬용 하한(모든 arm 공통으로 맞출 수): {int(summary['kept'].min())}")
+    return df
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Audit background hallucination in generated images.")
+    parser.add_argument("--gate", action="store_true", help="감사 대신 전량 게이트 모드로 실행")
+    parser.add_argument("--max-extra", type=int, default=0, help="허용할 보호 영역 밖 검출 수")
     parser.add_argument("--weights", required=True, help="baseline detector weights (best.pt)")
     parser.add_argument("--data", default=None, help="base data.yaml (생성 당시 머신에서)")
     parser.add_argument("--source-root", default=None, help="원본 데이터셋 루트 (파일명으로 재매핑)")
@@ -214,15 +315,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    audit(
-        Path(args.weights),
-        Path(args.outputs),
-        args.per_plan,
-        [p for p in args.plans.split(",") if p],
+    plans = [p for p in args.plans.split(",") if p]
+    common = dict(
         data_yaml=Path(args.data) if args.data else None,
         source_root=Path(args.source_root) if args.source_root else None,
         synthetic_root=Path(args.synthetic_root) if args.synthetic_root else None,
     )
+    if args.gate:
+        gate(Path(args.weights), Path(args.outputs), plans, max_extra=args.max_extra, **common)
+    else:
+        audit(Path(args.weights), Path(args.outputs), args.per_plan, plans, **common)
 
 
 if __name__ == "__main__":
