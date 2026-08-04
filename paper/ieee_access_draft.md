@@ -13,7 +13,7 @@
 
 ## Abstract
 
-Synthetic data generation with diffusion models has become a popular remedy for class imbalance in object detection, and the prevailing practice is to direct the generation budget toward *rare* classes. We show that on a 43-class military aircraft detection benchmark, class frequency is a poor proxy for class difficulty: per-class average precision correlates *negatively* with instance count (Pearson r = −0.375, p = 0.013; Spearman ρ = −0.408, p = 0.007), and the frequency-defined tail outperforms the head under a standard YOLOv8 baseline. Motivated by this, we treat the target-class *allocation signal* as the experimental variable. Holding the generation budget (1,000 images), the number of augmented classes (13), and the generation pipeline (bounding-box-protected background inpainting with per-image verification) fixed, we compare three allocation policies: uniform over the frequency-defined tail, rarity-and-weakness-weighted over the same tail, and a weakness policy that re-ranks *all* classes by measured baseline AP — which selects a class set entirely disjoint from the frequency tail. The outcome is a double dissociation: the frequency-based policy significantly improves only the frequency tail (+0.056 mAP50-95, Wilcoxon p = 0.0017) and the weakness-based policy significantly improves only its own weak set (+0.037, p = 0.040), while reweighting *within* a fixed class set yields no measurable benefit over uniform allocation (+0.003, p = 0.685). These results indicate that for synthetic augmentation, *which classes* receive the budget matters far more than *how the budget is shaped* within a class set, and that measured per-class performance — not frequency — should drive that choice. We release code and generation logs for reproducibility.
+Diffusion-based synthetic data is a common remedy for class imbalance in detection, and the generation budget is conventionally aimed at *rare* classes. On a 43-class military aircraft detection benchmark we find frequency to be a poor proxy for difficulty: per-class average precision correlates *negatively* with instance count (Pearson r = −0.375, p = 0.013), and the frequency-defined tail outperforms the head under a YOLOv8 baseline. We therefore treat the class-allocation signal as the experimental variable. Holding the budget (1,000 images), the class count (13), and the generator (bounding-box-protected background inpainting with per-image verification) fixed, we compare three policies: uniform over the frequency tail, rarity-and-weakness-weighted over the same tail, and a weakness policy re-ranking *all* classes by measured baseline AP — which selects a class set disjoint from the frequency tail. Evaluating each policy on both sets yields a double dissociation: the frequency-based policy significantly improves only the frequency tail (+0.056 mAP50-95, Wilcoxon p = 0.0017) and the weakness-based policy only its own weak set (+0.037, p = 0.040), while the two are indistinguishable overall (p = 0.154). Reweighting *within* a fixed set gives nothing over uniform allocation (+0.003, p = 0.685). We also quantify a failure mode invisible to pixel-level verification — 10.2% of generated images contain an unlabelled aircraft the model invented — and show by removing it that this noise does not explain why every generative arm trails repeat-factor sampling. Which classes receive the budget matters more than how it is shaped within them. Code and generation logs are released.
 
 **Index Terms** — object detection, data augmentation, diffusion models, image inpainting, long-tailed learning, military aircraft recognition, YOLO
 
@@ -21,7 +21,9 @@ Synthetic data generation with diffusion models has become a popular remedy for 
 
 ## I. Introduction
 
-Object detectors degrade on under-represented classes, and a growing line of work responds by synthesizing additional training images with generative models. Before a single image is generated, such a pipeline must answer a question that is usually settled by convention rather than measurement: *which classes receive the synthetic budget?*
+Automatic recognition of aircraft type from imagery underpins reconnaissance, airspace monitoring and intelligence analysis, and the aerospace community has pursued it with steadily deeper models — from CNN-based multi-target detection for airborne surveillance [Kim and Choi, IJASS 2019], through small airborne object recognition [Lee et al., IJASS 2025], to surveys of machine-learning detection in space electro-optical imagery [Zhang et al., IJASS 2024]. What these systems share is a dependence on annotated data that is expensive to obtain and unevenly distributed across aircraft types.
+
+Object detectors degrade on such under-represented classes, and a growing line of work responds by synthesizing additional training images with generative models. Before a single image is generated, such a pipeline must answer a question that is usually settled by convention rather than measurement: *which classes receive the synthetic budget?*
 
 The conventional answer is the rare classes. It is not, however, the only answer on record. Difficulty-Net [Sinha and Ohashi, WACV 2023] argues that reweighting by frequency overlooks categories that are intrinsically hard to learn, and ObjectAug [Zhang et al., 2021] compared rarity-driven against hard-driven category coefficients for segmentation augmentation on PASCAL VOC, reporting that the hard-driven ranking was the more effective of the two by 0.8 points. More recently, uncertainty-guided context augmentation [Röhrich et al., 2026] preserves the regions on which a segmenter is least certain and regenerates the surrounding context with a diffusion model — allocating by model uncertainty rather than by frequency. The direction of travel in this literature is therefore already established: *measured difficulty appears to be a better allocation signal than counting instances.*
 
@@ -64,7 +66,7 @@ These works establish the premise this paper starts from, and two differences de
 
 We use the public Military Aircraft Detection dataset in YOLO format (43 classes; 11,788 images; 18,832 boxes), split 80/10/10 into train/val/test (9,430 / 1,179 / 1,179 images). The train-split imbalance ratio (max/min instance count) is 10.49, with the smallest class at 86 instances — imbalanced, but far from LVIS-scale (§VII).
 
-Classes are grouped by frequency into head (13) / medium (17) / tail (13) using the bottom-30% rule on instance counts [TODO: state exact rule from config: bottom_percent=0.3, min_val_instances=5].
+Classes are grouped by frequency into head (13) / medium (17) / tail (13) by taking the bottom 30% of classes by instance count, subject to a minimum of five validation instances per class.
 
 ### B. Frequency–difficulty correlation
 
@@ -99,6 +101,16 @@ A run aborts if the failure rate exceeds 50%; in practice acceptance rates were 
 
 Fig. 5 shows representative outputs. Backgrounds are replaced wholesale — urban skyline to airport runway (a), foliage to mountain cloudscape (b), airfield buildings to storm clouds (c) — while the protected aircraft, its pose, and its label are untouched. Fig. 5(d) documents the pipeline's characteristic failure mode: the gates verify that protected regions are unchanged and that the background *did* change, but they cannot detect a *new* aircraft hallucinated into the repainted background despite a negative prompt that explicitly forbids extra, duplicate, and new aircraft. Such objects enter training unlabeled. §IV-D quantifies how often this happens.
 
+### C. Allocation policies
+
+All policies share budget B = 1,000, class count K = 13, per-class bounds [5, 200], and largest-remainder rounding.
+
+- **Uniform-tail** (`aug_uniform_inpaint`): equal weights over the frequency-tail classes.
+- **Selective-tail** (`aug_selective_inpaint`): weights `α·rarity + (1−α)·weakness` over the same tail classes, α = 0.6, where rarity = 1 − normalized log instance count and weakness = 1 − normalized baseline AP (basic_aug, val split).
+- **Weakness** (`aug_weakness_inpaint`): *all 43* classes ranked by baseline val AP (basic_aug); the bottom K = 13 receive the budget with weakness weights.
+
+On this dataset the weakness set (C17, EF2000, F14, F15, F16, F18, F22, F35, F4, JAS39, Mirage2000, Rafale, Tornado — 7 head + 6 medium) is **disjoint** from the frequency tail (AG600, Be200, E7, Mig31, P3, RQ4, SR71, Su34, Tu160, Tu95, U2, XB70, YF23). The allocation signal is therefore the only variable separating the three arms.
+
 ### D. How often does the background hallucinate aircraft?
 
 Because the failure is invisible to the pixel-level gates, we measure it directly. For a 450-image sample (150 per arm, evenly spaced over the accepted set), we run the `basic_aug` baseline detector on both the source and the generated image and count confident detections (conf ≥ 0.5) that fall outside every protected box. "Outside" uses containment rather than IoU — a small detection inside a large ground-truth box has near-zero IoU but is not a new object — with a 0.5 threshold on the fraction of the detection's own area that any padded ground-truth box covers. Scoring generated images alone would confound hallucinations with the detector's false positives, so the reported quantity is the per-image increase.
@@ -115,16 +127,6 @@ Because the failure is invisible to the pixel-level gates, we measure it directl
 Two checks support reading the increase as genuine hallucination rather than detector noise. First, the flagged regions were inspected visually (Fig. 7): the boxes sit on clearly rendered aircraft, not on texture artifacts. This matters because the source images are part of the detector's training data, so the near-zero source-side count is partly memorization and would otherwise inflate the delta. Second, the prompts ("aviation photography", "military airbase") plausibly invite the very objects the negative prompt forbids — the failure has an obvious mechanism.
 
 The consequence for training is specific: an unlabeled aircraft teaches the detector that an aircraft is background, which suppresses exactly the recall that §III-C identified as the dominant error mode. Because all three arms share one generator, prompts, and gates, this noise is matched across arms and cannot manufacture the differential result of §VI-B — but it plausibly caps the absolute gain available to every inpainting arm (§VII).
-
-### C. Allocation policies
-
-All policies share budget B = 1,000, class count K = 13, per-class bounds [5, 200], and largest-remainder rounding.
-
-- **Uniform-tail** (`aug_uniform_inpaint`): equal weights over the frequency-tail classes.
-- **Selective-tail** (`aug_selective_inpaint`): weights `α·rarity + (1−α)·weakness` over the same tail classes, α = 0.6, where rarity = 1 − normalized log instance count and weakness = 1 − normalized baseline AP (basic_aug, val split).
-- **Weakness** (`aug_weakness_inpaint`): *all 43* classes ranked by baseline val AP (basic_aug); the bottom K = 13 receive the budget with weakness weights.
-
-On this dataset the weakness set (C17, EF2000, F14, F15, F16, F18, F22, F35, F4, JAS39, Mirage2000, Rafale, Tornado — 7 head + 6 medium) is **disjoint** from the frequency tail (AG600, Be200, E7, Mig31, P3, RQ4, SR71, Su34, Tu160, Tu95, U2, XB70, YF23). The allocation signal is therefore the only variable separating the three arms.
 
 ## V. Experimental Setup
 
@@ -145,13 +147,13 @@ All variants except `real_only` train on top of the default-augmentation baselin
 
 ### B. Training and evaluation
 
-YOLOv8n, 640 px, 50 epochs, patience 15, auto batch. Baselines `real_only` and `basic_aug` were trained with seeds 42/43/44 and are reported as seed means; augmentation variants were trained with seed 42. Planning signals (weakness scores, class ranking) use the **val** split only; all reported results are on the held-out **test** split. Total training compute for the augmentation arms was 9.8 h on a single NVIDIA L4; synthetic generation was 3 × ~3.5 h on a T4.
+YOLOv8n [Jocher et al., 2023], 640 px, 50 epochs, patience 15, auto batch. Baselines `real_only` and `basic_aug` were trained with seeds 42/43/44 and are reported as seed means; augmentation variants were trained with seed 42. Planning signals (weakness scores, class ranking) use the **val** split only; all reported results are on the held-out **test** split. Total training compute for the augmentation arms was 9.8 h on a single NVIDIA L4; synthetic generation was 3 × ~3.5 h on a T4.
 
 ### C. Statistics
 
-We report scope-restricted macro mAP50-95 over three class sets — *all* (43), *tail* (13, frequency-defined), *weak* (13, weakness-plan-defined) — and Wilcoxon signed-rank tests on class-paired per-class AP (seed-averaged), the appropriate paired test given per-class difficulty heterogeneity. Realized synthetic counts equal the plan budget for all arms (1,000/1,000 accepted), with acceptance rates 81.8% (uniform), 80.8% (selective), 79.4% (weakness) over 1,223–1,260 attempts.
+We report scope-restricted macro mAP50-95 over three class sets — *all* (43), *tail* (13, frequency-defined), *weak* (13, weakness-plan-defined) — and Wilcoxon signed-rank tests [Wilcoxon, 1945] on class-paired per-class AP (seed-averaged), the appropriate paired test given per-class difficulty heterogeneity. Realized synthetic counts equal the plan budget for all arms (1,000/1,000 accepted), with acceptance rates 81.8% (uniform), 80.8% (selective), 79.4% (weakness) over 1,223–1,260 attempts.
 
-**Generation-quality metrics.** Table [TODO: number] scores the accepted images: CLIPScore (CLIP ViT-L/14, 100 × cosine between image and its generation prompt; 200-image sample per arm), LPIPS between source and generated image (degree of background change), and class-conditional FID against real images of the same classes.
+**Generation-quality metrics.** Table 3 scores the accepted images: CLIPScore (CLIP ViT-L/14, 100 × cosine between image and its generation prompt; 200-image sample per arm), LPIPS between source and generated image (degree of background change), and class-conditional FID against real images of the same classes.
 
 | arm | acceptance | CLIPScore ↑ | LPIPS (src↔gen) | FID ↓ (overall) | FID per-class median |
 |---|---|---|---|---|---|
