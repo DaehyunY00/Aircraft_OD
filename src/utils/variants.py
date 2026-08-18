@@ -7,16 +7,23 @@ Variant naming convention (marginal-gain design, see README Research Questions):
 - ``aug_oversample``        : basic_aug + tail oversampling
 - ``aug_rfs``               : basic_aug + repeat factor sampling
 - ``aug_copy_paste``        : basic_aug + tail copy-paste
-- ``aug_uniform_inpaint``   : basic_aug + uniform tail inpainting (Li et al. ECCV 2024)
-- ``aug_selective_inpaint`` : basic_aug + selective tail inpainting (proposed)
-- ``aug_weakness_inpaint``  : basic_aug + weakness-driven inpainting (proposed)
+- ``aug_uniform_inpaint``     : basic_aug + uniform tail inpainting (Li et al. ECCV 2024)
+- ``aug_selective_inpaint``   : basic_aug + selective tail inpainting (proposed)
+- ``aug_weakness_inpaint``    : basic_aug + weakness-driven inpainting (proposed)
+- ``aug_weakuniform_inpaint`` : basic_aug + uniform inpainting over the weak set
 
-The three inpainting variants share one generation budget and differ only in how
-that budget is *allocated*, which is the experiment's actual research question:
-uniform splits it evenly, selective weights the frequency-defined tail by
-rarity+weakness, and weakness ranks *all* classes by measured baseline AP. This
-dataset's instance_count/AP50 correlation is -0.33 (rarer classes score higher),
-so frequency and weakness select genuinely different class sets.
+The four inpainting variants share one generation budget and one class count,
+and form a 2×2 design over {class set} × {within-set weighting}:
+
+  set \\ weighting | uniform                  | weighted
+  ----------------|--------------------------|------------------------
+  frequency tail  | aug_uniform_inpaint      | aug_selective_inpaint
+  measured weak   | aug_weakuniform_inpaint  | aug_weakness_inpaint
+
+Uniform splits the budget evenly, selective weights the frequency-defined tail
+by rarity+weakness, and the weak-set plans rank *all* classes by measured
+baseline AP. This dataset's instance_count/AP50 correlation is -0.33 (rarer
+classes score higher), so frequency and weakness select disjoint class sets.
 
 Suffix axes are appended with ``_``:
 
@@ -40,6 +47,7 @@ KNOWN_BASE_VARIANTS = (
     "aug_uniform_inpaint",
     "aug_selective_inpaint",
     "aug_weakness_inpaint",
+    "aug_weakuniform_inpaint",
 )
 
 _SUFFIX_FLAGS = {
@@ -91,12 +99,13 @@ def uses_basic_aug(variant: str) -> bool:
     return parse_variant(variant).base != "real_only"
 
 
-SYNTHETIC_PLAN_NAMES = ("uniform", "selective", "weakness")
+SYNTHETIC_PLAN_NAMES = ("uniform", "selective", "weakness", "weakness_uniform")
 
 _PLAN_BY_BASE = {
     "aug_uniform_inpaint": "uniform",
     "aug_selective_inpaint": "selective",
     "aug_weakness_inpaint": "weakness",
+    "aug_weakuniform_inpaint": "weakness_uniform",
 }
 
 

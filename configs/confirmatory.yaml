@@ -1,0 +1,165 @@
+# IJASS 확인 실험 (2×2 배분 설계 × 3 seeds).
+#
+# full.yaml과의 차이:
+#   - seeds [42,43,44]: 모든 arm을 3 seed로 학습해 단일 seed 한계(RESULTS.md §7)를 해소
+#   - 2×2 설계: {tail, weak} class set × {uniform, weighted} 배분 — aug_weakuniform_inpaint 신규
+#   - allocator는 deterministic capped largest-remainder (uniform 1000/13 = 77×12 + 76×1)
+#   - outputs/synthetic을 기존 산출물과 완전히 분리 (outputs_confirmatory / synthetic_confirmatory)
+#   - experiments_data도 분리 — 구 할당(88/76×12)으로 빌드된 데이터셋 디렉터리를 절대 재사용하지 않음
+#   - planning은 val 고정, 최종 보고는 test 고정. test 결과로 plan/설정을 바꾸지 않는다.
+#
+# baseline 재사용 정책: real_only/basic_aug 42/43/44는 base 데이터셋(경로·내용 불변)으로
+# 학습된 기존 run을 outputs_confirmatory/runs 로 복사해 재사용한다. aug_rfs는
+# experiments_data 경로가 바뀌어 fingerprint가 일치하지 않으므로 seed 42를 포함해
+# 3 seed 전부 새로 학습한다.
+
+paths:
+  root: "/content/drive/MyDrive/Military_OD"
+  raw_data: "/content/data/raw"
+  processed_data: "/content/data/processed"
+  experiments_data: "/content/data/experiments_confirmatory"
+  synthetic_data: "/content/drive/MyDrive/Military_OD/synthetic_confirmatory"
+  outputs: "/content/drive/MyDrive/Military_OD/outputs_confirmatory"
+
+kaggle:
+  dataset: "rookieengg/military-aircraft-detection-dataset-yolo-format"
+
+mode:
+  smoke_test: false
+  max_images_per_split: null
+  max_classes: null
+
+detector:
+  model: "yolov8n.pt"
+  imgsz: 640
+  epochs: 50
+  batch: -1
+  workers: 8
+  patience: 15
+  seeds: [42, 43, 44]
+
+eval:
+  split: "test"        # 최종 보고 전용. planning에 사용 금지.
+
+planning:
+  split: "val"
+  baseline_variant: "basic_aug"
+
+tail:
+  method: "bottom_percent"
+  bottom_percent: 0.3
+  min_val_instances: 5
+  group_thresholds:
+    tail_max_instances: 200
+    medium_max_instances: 400
+
+statistics:
+  comparison_pairs:              # 보조 분석: 클래스 단위 Wilcoxon (seed 평균)
+    - ["aug_uniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "basic_aug"]
+    - ["aug_weakness_inpaint", "basic_aug"]
+    - ["aug_weakuniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "aug_uniform_inpaint"]
+    - ["aug_weakness_inpaint", "aug_weakuniform_inpaint"]
+    - ["aug_rfs", "basic_aug"]
+  confidence: 0.95
+
+# 사전 정의 확인 분석 (seed-blocked). test metric을 보기 전에 freeze되며,
+# src/eval/confirmatory_stats.py가 이 정의만 사용한다.
+confirmatory:
+  baseline: "basic_aug"
+  arms:
+    tail_uniform: "aug_uniform_inpaint"
+    tail_weighted: "aug_selective_inpaint"
+    weak_uniform: "aug_weakuniform_inpaint"
+    weak_weighted: "aug_weakness_inpaint"
+  seeds: [42, 43, 44]
+  confidence: 0.95
+  # primary contrasts — Holm 보정은 이 5개 family에만 적용
+  primary_contrasts:
+    - name: "tail_arms_vs_baseline_in_tail"
+      scope: "tail"
+      plus: ["aug_uniform_inpaint", "aug_selective_inpaint"]
+      minus: ["basic_aug"]
+    - name: "weak_arms_vs_baseline_in_weak"
+      scope: "weak"
+      plus: ["aug_weakuniform_inpaint", "aug_weakness_inpaint"]
+      minus: ["basic_aug"]
+    - name: "interaction_set_by_scope"
+      interaction: true        # (weak arms − tail arms) 차이가 weak scope와 tail scope에서 다른가
+    - name: "weighted_vs_uniform_in_tail"
+      scope: "tail"
+      plus: ["aug_selective_inpaint"]
+      minus: ["aug_uniform_inpaint"]
+    - name: "weighted_vs_uniform_in_weak"
+      scope: "weak"
+      plus: ["aug_weakness_inpaint"]
+      minus: ["aug_weakuniform_inpaint"]
+
+selective_generation:
+  alpha: 0.6
+  total_synthetic_budget: 1000
+  min_per_class: 5
+  weakness_num_classes: 13
+  max_per_class: 200
+  # 본 실험(outputs_full, basic_aug 42/43/44 val AP 평균)에서 확정한 weak 집합을 고정.
+  # 13위(0.4767)/14위(0.4775) margin이 0.0008이라 재측정 시 집합이 흔들릴 수 있어
+  # 확인 실험에서는 설계의 일부로 freeze한다. tail 13개와 교집합 0.
+  weakness_class_ids: [9, 14, 16, 17, 18, 19, 20, 21, 22, 24, 27, 30, 34]
+
+diffusion:
+  model_id: "runwayml/stable-diffusion-inpainting"
+  torch_dtype: "float16"
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  strength: 0.85
+  resolution: 512
+  mask_padding_ratio: 0.10
+  mask_blur_radius: 12
+  bbox_diff_threshold: 18.0
+  enable_attention_slicing: true
+  enable_xformers_if_available: true
+  prompts:
+    - "realistic sky background, natural lighting, aviation photography, high resolution, realistic clouds"
+    - "realistic runway background, military airbase, natural lighting, aviation photography"
+    - "cloudy sky background, realistic atmosphere, aviation photography"
+    - "clear blue sky, sunlight, realistic aircraft photography"
+    - "desert airfield background, haze, realistic lighting"
+  negative_prompt: "deformed aircraft, changed aircraft shape, extra aircraft, duplicate aircraft, new aircraft, distorted object, text, watermark, low quality, blurry"
+
+verification:
+  min_background_change: 10.0
+  max_bbox_protected_change: 5.0
+  min_editable_background_ratio: 0.05
+  max_retries_per_image: 2
+  max_failure_rate: 0.5
+  budget_attempt_multiplier: 2
+  compute_lpips: false
+  lpips_max_side: 512
+
+synthetic_quality:
+  enabled: true
+  max_images: 200
+  fid_feature_dim: 2048
+
+quality_filter:
+  enabled: false
+  clip_score_percentile: 50
+  max_refill_rounds: 1
+
+copy_paste:
+  scale_jitter: [0.5, 1.5]
+  horizontal_flip_prob: 0.5
+  max_paste_attempts: 10
+  max_overlap_iou: 0.3
+
+rfs:
+  threshold: 0.1
+
+experiments:
+  variants:
+    - aug_rfs
+    - aug_uniform_inpaint
+    - aug_selective_inpaint
+    - aug_weakness_inpaint
+    - aug_weakuniform_inpaint

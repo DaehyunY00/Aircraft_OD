@@ -16,10 +16,12 @@ from src.augment.inpaint_background import generate_from_plan
 from src.data.analyze_long_tail import analyze_long_tail, build_augmentation_plans
 from src.data.download_kaggle import dataset_exists, download_kaggle_dataset
 from src.data.inspect_dataset import inspect_dataset
+from src.data.prepare_mar20 import prepare_mar20
 from src.data.normalize_yolo_dataset import normalize_dataset
 from src.eval.collect_yolo_metrics import collect_metrics
 from src.eval.compute_long_tail_metrics import compute_long_tail_metrics
 from src.eval.plot_results import plot_results
+from src.eval.confirmatory_stats import freeze_analysis_plan, run_confirmatory_stats
 from src.eval.statistics import run_statistical_tests
 from src.eval.synthetic_quality import (
     compute_class_fid,
@@ -97,8 +99,13 @@ def _metric_available(outputs: Path, experiment: str, seed: int, eval_split: str
     if run_dir is not None:
         if "run_dir" not in raw.columns or "run_dir" not in per_class.columns:
             return False
-        raw_match = raw_match[raw_match["run_dir"].astype(str) == str(run_dir)]
-        per_class_match = per_class_match[per_class_match["run_dir"].astype(str) == str(run_dir)]
+        # 경로 구분자 정규화 비교 — Windows에서 str(Path("/x/y"))는 역슬래시가 되어
+        # CSV에 저장된 POSIX 문자열과 불일치했다 (같은 run을 새 run으로 오판).
+        target = Path(run_dir).as_posix()
+        raw_match = raw_match[raw_match["run_dir"].astype(str).map(lambda s: Path(s).as_posix()) == target]
+        per_class_match = per_class_match[
+            per_class_match["run_dir"].astype(str).map(lambda s: Path(s).as_posix()) == target
+        ]
     return not raw_match.empty and not per_class_match.empty
 
 
@@ -175,12 +182,24 @@ def _run_training_jobs(
     return run_dirs
 
 
-def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tuple[Path, Path, Path, Path]:
+def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tuple[Path, dict[str, Path]]:
     paths = cfg["paths"]
     raw_data = Path(paths["raw_data"])
     processed_data = Path(paths["processed_data"])
     outputs = ensure_dir(paths["outputs"])
-    if dataset_exists(raw_data):
+    dataset_cfg = cfg.get("dataset", {}) or {}
+    dataset_format = str(dataset_cfg.get("format", "yolo")).lower()
+    if dataset_format in ("mar20", "mar20_voc"):
+        # MAR20은 자동 다운로드 불가(저자 배포 링크에서 수동 배치). 변환기는
+        # 멱등이라 이미 변환된 raw_data가 있으면 그대로 재사용한다.
+        prepare_mar20(
+            dataset_cfg.get("mar20_raw", ""),
+            raw_data,
+            val_fraction=float(dataset_cfg.get("val_fraction", 0.2)),
+            seed=int(dataset_cfg.get("split_seed", 42)),
+            overwrite=force,
+        )
+    elif dataset_exists(raw_data):
         print(f"[INFO] 원본 데이터셋 확인 완료: {raw_data}")
     elif download:
         download_kaggle_dataset(cfg["kaggle"]["dataset"], raw_data, force=force)
@@ -212,10 +231,8 @@ def run_analysis(cfg: dict, force: bool = False, download: bool = False) -> tupl
         seed=int(cfg.get("detector", {}).get("seeds", [42])[0]),
     )
     grouped = analyze_long_tail(data_yaml, cfg, outputs)
-    uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
-        grouped, None, cfg.get("selective_generation", {}), outputs
-    )
-    return Path(data_yaml), uniform_plan, selective_plan, weakness_plan
+    plan_paths = build_augmentation_plans(grouped, None, cfg.get("selective_generation", {}), outputs)
+    return Path(data_yaml), plan_paths
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -229,6 +246,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     experiments_data = ensure_dir(cfg["paths"]["experiments_data"])
     base_data_yaml = processed_data / "base" / "data.yaml"
     print(f"[시간] 파이프라인 시작 | config={args.config} | 계획 split={planning_split} | 최종 평가 split={eval_split}")
+    if cfg.get("confirmatory"):
+        # Freeze the pre-specified contrast family before any final-eval metric
+        # can exist, so the analysis cannot be tuned on test numbers.
+        freeze_analysis_plan(cfg, outputs)
 
     if args.only_train:
         variants = cfg.get("experiments", {}).get("variants", [])
@@ -248,9 +269,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             force_new_training=args.force_new_training,
         )
     else:
-        base_data_yaml, uniform_plan, selective_plan, weakness_plan = run_analysis(
-            cfg, force=args.force, download=args.download
-        )
+        base_data_yaml, plan_paths = run_analysis(cfg, force=args.force, download=args.download)
         print(f"[시간] 분석 단계 완료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
         if args.only_analysis:
             print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
@@ -260,7 +279,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # basic_aug (the primary baseline every tail technique is measured
         # against, and the source of the weakness score for selective planning).
         baseline_variant = str(cfg.get("planning", {}).get("baseline_variant", "basic_aug"))
-        for variant in ("real_only", "basic_aug"):
+        # 새 cell(RT-DETR/MAR20)에서 참고용 하한선 real_only까지 강제로 돌리면
+        # GPU-hour가 불필요하게 늘어난다 — 학습할 baseline 목록을 config로 연다.
+        # planning baseline(basic_aug)은 selective plan의 weakness 산출에 필수라
+        # 목록에서 빠져 있으면 보정한다.
+        baseline_train_variants = list(
+            cfg.get("experiments", {}).get("baseline_variants") or ("real_only", "basic_aug")
+        )
+        if baseline_variant not in baseline_train_variants:
+            baseline_train_variants.append(baseline_variant)
+        for variant in baseline_train_variants:
             for seed in cfg.get("detector", {}).get("seeds", [42]):
                 seed = int(seed)
                 print(f"[시간] 학습 작업 시작: {variant}, seed={seed} | 계획 metric 수집 split={planning_split}")
@@ -287,7 +315,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 f"[WARN] 계획 split={planning_split}의 {baseline_variant} AP를 찾지 못했습니다. "
                 "class frequency만으로 synthetic plan을 생성합니다."
             )
-        uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
+        plan_paths = build_augmentation_plans(
             grouped,
             planning_baseline_ap,
             cfg.get("selective_generation", {}),
@@ -305,36 +333,24 @@ def run_pipeline(args: argparse.Namespace) -> None:
                     "파이프라인 구조 점검 전용이며, 이 상태의 synthetic으로 학습한 결과는 무효입니다."
                 )
             print(f"[시간] synthetic 생성 시작 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
-            generate_from_plan(
-                base_data_yaml,
-                uniform_plan,
-                synthetic_root,
-                outputs,
-                cfg,
-                plan_name="uniform",
-                force=args.force,
-                dry_run=args.dry_run_inpaint,
-            )
-            generate_from_plan(
-                base_data_yaml,
-                selective_plan,
-                synthetic_root,
-                outputs,
-                cfg,
-                plan_name="selective",
-                force=args.force,
-                dry_run=args.dry_run_inpaint,
-            )
-            generate_from_plan(
-                base_data_yaml,
-                weakness_plan,
-                synthetic_root,
-                outputs,
-                cfg,
-                plan_name="weakness",
-                force=args.force,
-                dry_run=args.dry_run_inpaint,
-            )
+            # Generate only the plans an enabled variant actually consumes:
+            # a config that trains a subset of arms must not spend GPU-hours
+            # generating pools nobody trains on.
+            needed_plans = {uses_synthetic_plan(v) for v in (cfg.get("experiments", {}).get("variants") or [])}
+            needed_plans.discard(None)
+            for plan_name in SYNTHETIC_PLAN_NAMES:
+                if plan_name not in plan_paths or (needed_plans and plan_name not in needed_plans):
+                    continue
+                generate_from_plan(
+                    base_data_yaml,
+                    plan_paths[plan_name],
+                    synthetic_root,
+                    outputs,
+                    cfg,
+                    plan_name=plan_name,
+                    force=args.force,
+                    dry_run=args.dry_run_inpaint,
+                )
             print(f"[시간] synthetic 생성 완료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
             if args.stop_after_inpaint:
                 print(
@@ -414,8 +430,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         experiment_yamls = build_experiment_datasets(
             base_data_yaml,
             experiments_data,
-            uniform_plan=uniform_plan,
-            selective_plan=selective_plan,
+            uniform_plan=plan_paths.get("uniform"),
+            selective_plan=plan_paths.get("selective"),
             synthetic_root=synthetic_root,
             variants=cfg.get("experiments", {}).get("variants"),
             overwrite=args.force,
@@ -447,6 +463,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
             run_statistical_tests(per_class_path, groups_path, outputs, cfg, eval_split=eval_split)
         except Exception as exc:
             print(f"[WARN] 통계 검정 단계 실패 (실험 결과 자체는 저장됨): {exc}")
+        if cfg.get("confirmatory"):
+            try:
+                run_confirmatory_stats(per_class_path, groups_path, outputs, cfg, eval_split=eval_split)
+            except Exception as exc:
+                print(f"[WARN] 확인 통계 단계 실패 (실험 결과 자체는 저장됨): {exc}")
         plot_results(outputs, eval_split=eval_split)
     print(f"[시간] 파이프라인 종료 | 전체 경과 {format_duration(pipeline_timer.elapsed())}")
 

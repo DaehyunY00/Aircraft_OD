@@ -12,6 +12,7 @@ for _parent in Path(__file__).resolve().parents:
 
 import pandas as pd
 
+from src.utils.detector import load_detector
 from src.utils.io import ensure_dir, load_config, load_yaml
 from src.utils.yolo import normalize_class_names
 
@@ -92,10 +93,11 @@ def validate_and_collect_per_class(
     data_yaml: str | Path,
     imgsz: int = 640,
     split: str = "test",
+    model_name: str | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
-    from ultralytics import YOLO
-
-    model = YOLO(str(weights))
+    # model_name으로 계열을 판정해 RT-DETR 체크포인트는 RTDETR 클래스(전용
+    # validator)로 연다 — YOLO 클래스로 열면 NMS 전제 후처리가 잘못 적용된다.
+    model = load_detector(weights, model_name=model_name)
     metrics = model.val(data=str(data_yaml), imgsz=imgsz, split=split, plots=True, verbose=False)
     names = _class_names(data_yaml)
     box = getattr(metrics, "box", None)
@@ -132,7 +134,9 @@ def collect_metrics(
     per_class = pd.DataFrame()
     if data_yaml and weights and Path(weights).exists():
         try:
-            val_overall, per_class = validate_and_collect_per_class(weights, data_yaml, imgsz=imgsz, split=split)
+            val_overall, per_class = validate_and_collect_per_class(
+                weights, data_yaml, imgsz=imgsz, split=split, model_name=model_name
+            )
             overall.update({k: v for k, v in val_overall.items() if v is not None})
         except Exception as exc:
             print(f"[WARN] class-wise validation metric 수집 실패. results.csv 파싱만 사용합니다: {exc}")

@@ -17,7 +17,13 @@ import pandas as pd
 from PIL import Image
 
 from src.utils.io import ensure_dir, load_config, load_yaml
-from src.utils.yolo import label_path_for_image, list_images, normalize_class_names, read_yolo_labels
+from src.utils.yolo import (
+    label_path_for_image,
+    labels_dir_for_images_dir,
+    list_images,
+    normalize_class_names,
+    read_yolo_labels,
+)
 
 
 def _split_dirs(data_yaml: str | Path, split: str) -> tuple[Path, Path]:
@@ -34,7 +40,7 @@ def _split_dirs(data_yaml: str | Path, split: str) -> tuple[Path, Path]:
     images_dir = Path(split_value)
     if not images_dir.is_absolute():
         images_dir = root / images_dir
-    labels_dir = Path(str(images_dir).replace("/images/", "/labels/"))
+    labels_dir = labels_dir_for_images_dir(images_dir)
     if not labels_dir.exists():
         labels_dir = root / "labels" / split
     return images_dir, labels_dir
@@ -237,31 +243,56 @@ def _allocate_by_weights(
     min_per_class: int,
     max_per_class: int,
 ) -> list[int]:
+    """Deterministic capped largest-remainder allocation.
+
+    Each class gets min_per_class first (when the budget covers it), the rest is
+    split proportionally to weights, fractional leftovers go to the largest
+    remainders, and per-class caps are enforced by redistributing the capped
+    surplus over the still-open classes. Ties break toward the lower index, so
+    the same inputs always produce the same plan.
+    """
     n = len(weights)
     if n == 0 or total_budget <= 0:
         return []
+    total_budget = int(total_budget)
+    min_per_class = int(min_per_class)
+    max_per_class = int(max_per_class)
     allocation = np.zeros(n, dtype=int)
     if total_budget >= min_per_class * n:
-        allocation[:] = min_per_class
-    remaining = max(0, total_budget - int(allocation.sum()))
-    weights = weights.astype(float)
+        allocation[:] = min(min_per_class, max_per_class)
+    weights = np.asarray(weights, dtype=float)
     if weights.sum() <= 1e-12:
         weights = np.ones(n, dtype=float)
+    remaining = total_budget - int(allocation.sum())
     while remaining > 0:
         caps = np.maximum(0, max_per_class - allocation)
-        active = caps > 0
-        if not active.any():
+        open_idx = np.flatnonzero(caps > 0)
+        if open_idx.size == 0:
             break
-        probs = weights * active
-        probs = probs / probs.sum()
-        raw = probs * remaining
-        add = np.minimum(np.floor(raw).astype(int), caps)
-        if add.sum() == 0:
-            remainders = np.where(active, raw - np.floor(raw), -1.0)
-            idx = int(np.argmax(remainders))
-            add[idx] = 1
-        allocation += add
-        remaining -= int(add.sum())
+        w = weights[open_idx]
+        if w.sum() <= 1e-12:
+            w = np.ones(open_idx.size, dtype=float)
+        raw = w / w.sum() * remaining
+        base = np.minimum(np.floor(raw).astype(int), caps[open_idx])
+        allocation[open_idx] += base
+        remaining -= int(base.sum())
+        if remaining <= 0:
+            break
+        open_caps = np.maximum(0, max_per_class - allocation)[open_idx]
+        # Largest remainder first; equal remainders resolve to the lower
+        # class index. Skips classes that just hit their cap.
+        order = sorted(range(open_idx.size), key=lambda i: (-(raw[i] - np.floor(raw[i])), open_idx[i]))
+        progressed = False
+        for i in order:
+            if remaining <= 0:
+                break
+            if open_caps[i] > 0:
+                allocation[open_idx[i]] += 1
+                open_caps[i] -= 1
+                remaining -= 1
+                progressed = True
+        if not progressed:
+            break
     return allocation.tolist()
 
 
@@ -270,7 +301,14 @@ def build_augmentation_plans(
     baseline_ap: pd.DataFrame | None,
     selective_cfg: dict[str, Any],
     outputs: str | Path,
-) -> tuple[Path, Path, Path]:
+) -> dict[str, Path]:
+    """Build the 2×2 allocation plans: {tail, weak} class set × {uniform, weighted}.
+
+    Returns a dict keyed by plan name: uniform / selective (tail set) and
+    weakness_uniform / weakness (weak set). All four spend the same budget on
+    the same number of classes, so the class-set signal and the within-set
+    weighting are the only variables.
+    """
     analysis_dir = ensure_dir(Path(outputs) / "analysis")
     tail_df = grouped_stats[grouped_stats["group"] == "tail"].copy()
     scored = compute_priority_scores(tail_df, baseline_ap, alpha=float(selective_cfg.get("alpha", 0.6)))
@@ -299,11 +337,29 @@ def build_augmentation_plans(
     all_scored = compute_priority_scores(
         grouped_stats.copy(), baseline_ap, alpha=float(selective_cfg.get("alpha", 0.6))
     )
-    # class_id as the secondary key keeps the selection deterministic when the
-    # baselines have not been trained yet and every baseline_ap is still 0.0.
-    weakness = (
-        all_scored.sort_values(["baseline_ap", "class_id"], ascending=[True, True]).head(num_classes).copy()
-    )
+    pinned_ids = selective_cfg.get("weakness_class_ids")
+    if pinned_ids:
+        # Confirmatory runs pin the weak class set explicitly: the 13th/14th
+        # weakest val-AP classes sit 0.0008 apart, so re-measuring the baseline
+        # on other hardware could silently swap a class and invalidate both the
+        # frozen design and the reuse of the generated pool.
+        pinned = {int(v) for v in pinned_ids}
+        weak_set = all_scored[all_scored["class_id"].astype(int).isin(pinned)].copy()
+        missing = pinned - set(weak_set["class_id"].astype(int))
+        if missing:
+            raise ValueError(f"weakness_class_ids에 데이터셋에 없는 class_id가 있습니다: {sorted(missing)}")
+        if len(weak_set) != num_classes:
+            raise ValueError(
+                f"weakness_class_ids 개수({len(weak_set)})가 weakness_num_classes({num_classes})와 다릅니다."
+            )
+        weak_set = weak_set.sort_values(["baseline_ap", "class_id"], ascending=[True, True])
+    else:
+        # class_id as the secondary key keeps the selection deterministic when
+        # the baselines have not been trained yet and every baseline_ap is 0.0.
+        weak_set = (
+            all_scored.sort_values(["baseline_ap", "class_id"], ascending=[True, True]).head(num_classes).copy()
+        )
+    weakness = weak_set.copy()
     weakness["num_synthetic_images"] = _allocate_by_weights(
         weakness["weakness_score"].to_numpy(dtype=float),
         budget,
@@ -311,6 +367,18 @@ def build_augmentation_plans(
         max_per_class,
     )
     weakness = weakness.sort_values("class_id")
+
+    # Same weak class set, uniform within-set weighting: the fourth cell of the
+    # 2×2 (set × weighting) design. Allocation runs in the same selection order
+    # as the weighted weak plan so tie-breaking is identical.
+    weakness_uniform = weak_set.copy()
+    weakness_uniform["num_synthetic_images"] = _allocate_by_weights(
+        np.ones(len(weakness_uniform), dtype=float),
+        budget,
+        min_per_class,
+        max_per_class,
+    )
+    weakness_uniform = weakness_uniform.sort_values("class_id")
 
     columns = [
         "class_id",
@@ -323,13 +391,18 @@ def build_augmentation_plans(
         "priority_score",
         "num_synthetic_images",
     ]
-    uniform_path = analysis_dir / "augmentation_plan_uniform.csv"
-    selective_path = analysis_dir / "augmentation_plan_selective.csv"
-    weakness_path = analysis_dir / "augmentation_plan_weakness.csv"
-    uniform[columns].to_csv(uniform_path, index=False)
-    selective[columns].to_csv(selective_path, index=False)
-    weakness[columns].to_csv(weakness_path, index=False)
-    return uniform_path, selective_path, weakness_path
+    plans = {
+        "uniform": uniform,
+        "selective": selective,
+        "weakness": weakness,
+        "weakness_uniform": weakness_uniform,
+    }
+    plan_paths: dict[str, Path] = {}
+    for plan_name, plan_df in plans.items():
+        path = analysis_dir / f"augmentation_plan_{plan_name}.csv"
+        plan_df[columns].to_csv(path, index=False)
+        plan_paths[plan_name] = path
+    return plan_paths
 
 
 def analyze_long_tail(data_yaml: str | Path, config: dict[str, Any], outputs: str | Path) -> pd.DataFrame:
@@ -361,7 +434,9 @@ def main() -> None:
     outputs = args.outputs or cfg["paths"]["outputs"]
     grouped = analyze_long_tail(args.data, cfg, outputs)
     baseline_ap = pd.read_csv(args.baseline_ap) if args.baseline_ap and Path(args.baseline_ap).exists() else None
-    build_augmentation_plans(grouped, baseline_ap, cfg.get("selective_generation", {}), outputs)
+    plan_paths = build_augmentation_plans(grouped, baseline_ap, cfg.get("selective_generation", {}), outputs)
+    for plan_name, path in plan_paths.items():
+        print(f"[INFO] augmentation plan 저장: {plan_name} -> {path}")
 
 
 if __name__ == "__main__":

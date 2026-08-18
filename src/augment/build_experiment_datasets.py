@@ -19,7 +19,13 @@ from src.augment.oversample_tail import oversample_from_plan
 from src.augment.repeat_factor_sampling import apply_rfs, rfs_config
 from src.utils.io import copy_or_symlink, ensure_dir, load_config
 from src.utils.variants import parse_variant, uses_synthetic_plan
-from src.utils.yolo import create_data_yaml, label_path_for_image, list_images, normalize_class_names
+from src.utils.yolo import (
+    create_data_yaml,
+    label_path_for_image,
+    labels_dir_for_images_dir,
+    list_images,
+    normalize_class_names,
+)
 
 
 def read_data_yaml(data_yaml: str | Path) -> dict[str, Any]:
@@ -42,7 +48,7 @@ def split_dirs(data_yaml: str | Path, split: str) -> tuple[Path, Path]:
     images_dir = Path(split_value)
     if not images_dir.is_absolute():
         images_dir = data["_root"] / images_dir
-    labels_dir = Path(str(images_dir).replace("/images/", "/labels/"))
+    labels_dir = labels_dir_for_images_dir(images_dir)
     if not labels_dir.exists():
         labels_dir = data["_root"] / "labels" / split
     return images_dir, labels_dir

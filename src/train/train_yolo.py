@@ -13,6 +13,7 @@ for _parent in Path(__file__).resolve().parents:
         sys.path.insert(0, str(_parent))
         break
 
+from src.utils.detector import is_rtdetr_model, load_detector
 from src.utils.io import ensure_dir, load_config, load_yaml, save_yaml
 from src.utils.seed import set_seed
 from src.utils.timing import format_duration
@@ -156,7 +157,7 @@ def train_yolo(
     force_new_run: bool = False,
 ) -> Path:
     try:
-        from ultralytics import YOLO
+        import ultralytics  # noqa: F401
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "ultralytics 패키지가 설치되어 있지 않습니다. Colab에서 먼저 다음 명령을 실행하세요:\n"
@@ -186,13 +187,13 @@ def train_yolo(
     if resume_checkpoint is not None:
         run_name = resume_run_dir.name if resume_run_dir is not None else resume_checkpoint.parent.parent.name
         run_dir = resume_run_dir or resume_checkpoint.parent.parent
-        model = YOLO(str(resume_checkpoint))
+        model = load_detector(resume_checkpoint, model_name=model_name)
         print(f"[INFO] 중단된 YOLO 학습 재개: {run_dir} | checkpoint={resume_checkpoint}")
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         run_name = f"{run_name_prefix(name, model_name, seed)}{timestamp}"
         run_dir = project / run_name
-        model = YOLO(model_name)
+        model = load_detector(model_name)
 
     epoch_timer = {"start": time.time()}
 
@@ -219,6 +220,14 @@ def train_yolo(
     except Exception as exc:
         print(f"[WARN] YOLO epoch 시간 콜백을 등록하지 못했습니다. Ultralytics 기본 로그를 사용합니다: {exc}")
 
+    batch = detector.get("batch", -1)
+    if is_rtdetr_model(model_name) and (batch is None or int(batch) < 0):
+        # Ultralytics auto-batch(-1)는 YOLO 계열 기준으로 검증된 추정이라
+        # RT-DETR에서는 OOM/과소 배치가 나올 수 있다. 명시값이 없으면 L4 24GB
+        # 기준 보수값으로 고정한다 (config detector.batch로 조정).
+        print("[WARN] RT-DETR에 batch=-1(auto)이 설정되어 batch=8로 대체합니다. detector.batch를 명시하세요.")
+        batch = 8
+
     if resume_checkpoint is not None:
         train_args: dict[str, Any] = {"resume": True}
     else:
@@ -226,7 +235,7 @@ def train_yolo(
             "data": str(data_yaml),
             "imgsz": int(detector.get("imgsz", 640)),
             "epochs": int(detector.get("epochs", 50)),
-            "batch": detector.get("batch", -1),
+            "batch": batch,
             "workers": int(detector.get("workers", 2)),
             "seed": seed,
             "project": str(project),

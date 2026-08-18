@@ -106,6 +106,24 @@ def write_yolo_labels(labels: Iterable[dict[str, float | int]], path: str | Path
     return path
 
 
+def labels_dir_for_images_dir(images_dir: str | Path) -> Path:
+    """'images' 경로 컴포넌트를 'labels'로 치환 (OS 구분자 무관).
+
+    기존 str.replace("/images/", "/labels/") 구현은 Windows 역슬래시 경로에서
+    치환이 무력화되어 labels_dir가 images_dir 자신이 되는 버그가 있었다
+    (소스 0장 → 빈 생성 로그). 마지막 컴포넌트(=split 이름)를 제외하고
+    뒤에서부터 첫 'images' 컴포넌트를 바꾼다. 없으면 입력을 그대로 돌려주고
+    호출부의 fallback(root/labels/split)이 처리한다.
+    """
+    images_dir = Path(images_dir)
+    parts = list(images_dir.parts)
+    for idx in range(len(parts) - 2, -1, -1):
+        if parts[idx].lower() == "images":
+            parts[idx] = "labels"
+            return Path(*parts)
+    return images_dir
+
+
 def label_path_for_image(image_path: str | Path, images_root: str | Path, labels_root: str | Path) -> Path:
     image_path = Path(image_path)
     rel = image_path.relative_to(images_root)

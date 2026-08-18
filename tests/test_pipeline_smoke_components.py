@@ -86,14 +86,13 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
 
     data_yaml = normalize_dataset(raw, processed / "base", seed=42)
     grouped = analyze_long_tail(data_yaml, config, outputs)
-    uniform_plan, selective_plan, weakness_plan = build_augmentation_plans(
-        grouped, None, config["selective_generation"], outputs
-    )
+    plan_paths = build_augmentation_plans(grouped, None, config["selective_generation"], outputs)
 
     synthetic_root = processed / "synthetic_inpaint"
-    generate_from_plan(data_yaml, uniform_plan, synthetic_root, outputs, config, plan_name="uniform", dry_run=True)
-    generate_from_plan(data_yaml, selective_plan, synthetic_root, outputs, config, plan_name="selective", dry_run=True)
-    generate_from_plan(data_yaml, weakness_plan, synthetic_root, outputs, config, plan_name="weakness", dry_run=True)
+    for plan_name in ("uniform", "selective", "weakness"):
+        generate_from_plan(
+            data_yaml, plan_paths[plan_name], synthetic_root, outputs, config, plan_name=plan_name, dry_run=True
+        )
 
     assert (outputs / "analysis" / "dataset_summary.csv").exists()
     assert (outputs / "synthetic" / "generation_log.csv").exists()
@@ -101,7 +100,7 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
     assert set(["label_sanity_ok", "output_exists", "output_size_matches", "nontrivial_image"]).issubset(log.columns)
     assert bool(log["label_sanity_ok"].all())
     assert len(list((synthetic_root / "images" / "train").glob("*.jpg"))) == int(
-        pd.read_csv(selective_plan)["num_synthetic_images"].sum()
+        pd.read_csv(plan_paths["selective"])["num_synthetic_images"].sum()
     )
 
     # Non-inpaint variants build fine from dry-run state (they never touch the
@@ -110,8 +109,8 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
     experiment_yamls = build_experiment_datasets(
         data_yaml,
         experiments,
-        uniform_plan=uniform_plan,
-        selective_plan=selective_plan,
+        uniform_plan=plan_paths["uniform"],
+        selective_plan=plan_paths["selective"],
         synthetic_root=synthetic_root,
         variants=non_inpaint,
         config=config,
@@ -126,8 +125,8 @@ def test_analysis_dry_run_inpaint_and_dataset_build(tmp_path: Path) -> None:
         build_experiment_datasets(
             data_yaml,
             experiments,
-            uniform_plan=uniform_plan,
-            selective_plan=selective_plan,
+            uniform_plan=plan_paths["uniform"],
+            selective_plan=plan_paths["selective"],
             synthetic_root=synthetic_root,
             variants=["aug_uniform_inpaint", "aug_selective_inpaint"],
             config=config,

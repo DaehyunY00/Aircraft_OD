@@ -1,0 +1,150 @@
+# Tier 2 / C2 — MAD × RT-DETR-L (아키텍처 일반화 cell).
+#
+# 목적: C1(MAD × YOLOv8n, outputs_confirmatory)에서 확인된 tail 배경 인페인팅
+# 이득이 transformer 기반 NMS-free 검출기(RT-DETR-L)로 이식되는가.
+# 설계 요약:
+#   - arm: basic_aug(주 baseline) + {uniform, selective} tail inpaint + RFS. weak arms 없음.
+#   - real_only는 학습하지 않는다 (참고 하한선은 C1에 있음) → baseline_variants.
+#   - selective plan은 RT-DETR 자신의 basic_aug val AP로 재계산한다 (검출기별 weakness).
+#   - uniform pool은 빈도 기반이라 C1과 동일 → synthetic_mad_rtdetr에
+#     confirmatory pool을 시딩해 재사용 (tier2_vm_task.sh가 수행).
+#   - diffusion/verification/tail/prompts는 confirmatory.yaml과 문자 그대로 동일 —
+#     cell 간 유일한 차이가 검출기이도록 고정.
+
+paths:
+  root: "/content/drive/MyDrive/Military_OD"
+  raw_data: "/content/data/raw"
+  processed_data: "/content/data/processed"
+  experiments_data: "/content/data/experiments_mad_rtdetr"
+  synthetic_data: "/content/drive/MyDrive/Military_OD/synthetic_mad_rtdetr"
+  outputs: "/content/drive/MyDrive/Military_OD/outputs_mad_rtdetr"
+
+kaggle:
+  dataset: "rookieengg/military-aircraft-detection-dataset-yolo-format"
+
+mode:
+  smoke_test: false
+  max_images_per_split: null
+  max_classes: null
+
+detector:
+  model: "rtdetr-l.pt"
+  imgsz: 640
+  epochs: 50
+  batch: 8              # L4 24GB 기준 보수값. auto(-1)는 RT-DETR에서 사용 금지.
+  workers: 8
+  patience: 15
+  seeds: [42, 43, 44]
+
+eval:
+  split: "test"          # 최종 보고 전용. planning에 사용 금지.
+
+planning:
+  split: "val"
+  baseline_variant: "basic_aug"
+
+tail:
+  method: "bottom_percent"
+  bottom_percent: 0.3
+  min_val_instances: 5
+  group_thresholds:
+    tail_max_instances: 200
+    medium_max_instances: 400
+
+statistics:
+  comparison_pairs:              # 보조 분석: 클래스 단위 Wilcoxon (seed 평균)
+    - ["aug_uniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "aug_uniform_inpaint"]
+    - ["aug_rfs", "basic_aug"]
+  confidence: 0.95
+
+# 사전 정의 확인 분석 (seed-blocked). weak arms가 없는 축소 설계이므로
+# interaction contrast는 정의하지 않는다. Holm 보정은 아래 3개 family에만 적용.
+confirmatory:
+  baseline: "basic_aug"
+  arms:
+    tail_uniform: "aug_uniform_inpaint"
+    tail_weighted: "aug_selective_inpaint"
+  seeds: [42, 43, 44]
+  confidence: 0.95
+  primary_contrasts:
+    - name: "tail_arms_vs_baseline_in_tail"
+      scope: "tail"
+      plus: ["aug_uniform_inpaint", "aug_selective_inpaint"]
+      minus: ["basic_aug"]
+    - name: "uniform_vs_baseline_all"        # Li et al. 방식(uniform)의 overall 이득 이식성
+      scope: "all"
+      plus: ["aug_uniform_inpaint"]
+      minus: ["basic_aug"]
+    - name: "weighted_vs_uniform_in_tail"
+      scope: "tail"
+      plus: ["aug_selective_inpaint"]
+      minus: ["aug_uniform_inpaint"]
+
+selective_generation:
+  alpha: 0.6
+  total_synthetic_budget: 1000
+  min_per_class: 5
+  weakness_num_classes: 13
+  max_per_class: 200
+  # weak scope 보고의 C1 일관성을 위해 confirmatory와 동일 집합으로 고정.
+  # (weak arm은 학습하지 않으며 weakness pool도 생성되지 않는다 — scope 정의 전용.)
+  weakness_class_ids: [9, 14, 16, 17, 18, 19, 20, 21, 22, 24, 27, 30, 34]
+
+diffusion:
+  model_id: "runwayml/stable-diffusion-inpainting"
+  torch_dtype: "float16"
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  strength: 0.85
+  resolution: 512
+  mask_padding_ratio: 0.10
+  mask_blur_radius: 12
+  bbox_diff_threshold: 18.0
+  enable_attention_slicing: true
+  enable_xformers_if_available: true
+  prompts:
+    - "realistic sky background, natural lighting, aviation photography, high resolution, realistic clouds"
+    - "realistic runway background, military airbase, natural lighting, aviation photography"
+    - "cloudy sky background, realistic atmosphere, aviation photography"
+    - "clear blue sky, sunlight, realistic aircraft photography"
+    - "desert airfield background, haze, realistic lighting"
+  negative_prompt: "deformed aircraft, changed aircraft shape, extra aircraft, duplicate aircraft, new aircraft, distorted object, text, watermark, low quality, blurry"
+
+verification:
+  min_background_change: 10.0
+  max_bbox_protected_change: 5.0
+  min_editable_background_ratio: 0.05
+  max_retries_per_image: 2
+  max_failure_rate: 0.5
+  budget_attempt_multiplier: 2
+  compute_lpips: false
+  lpips_max_side: 512
+
+synthetic_quality:
+  enabled: true
+  max_images: 200
+  fid_feature_dim: 2048
+
+quality_filter:
+  enabled: false
+  clip_score_percentile: 50
+  max_refill_rounds: 1
+
+copy_paste:
+  scale_jitter: [0.5, 1.5]
+  horizontal_flip_prob: 0.5
+  max_paste_attempts: 10
+  max_overlap_iou: 0.3
+
+rfs:
+  threshold: 0.1
+
+experiments:
+  baseline_variants:
+    - basic_aug
+  variants:
+    - aug_rfs
+    - aug_uniform_inpaint
+    - aug_selective_inpaint

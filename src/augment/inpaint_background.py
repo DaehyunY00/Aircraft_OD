@@ -34,7 +34,7 @@ from src.eval.verify_generation import (
 from src.utils.io import copy_file, ensure_dir, load_config
 from src.utils.seed import set_seed
 from src.utils.timing import ProgressTimer
-from src.utils.yolo import label_path_for_image, list_images, read_yolo_labels
+from src.utils.yolo import label_path_for_image, labels_dir_for_images_dir, list_images, read_yolo_labels
 
 DRY_RUN_MARKER_NAME = "DRY_RUN_MARKER.txt"
 
@@ -125,7 +125,7 @@ def _split_dirs(data_yaml: str | Path) -> tuple[Path, Path]:
     train = Path(data.get("train", "images/train"))
     if not train.is_absolute():
         train = root / train
-    labels = Path(str(train).replace("/images/", "/labels/"))
+    labels = labels_dir_for_images_dir(train)
     if not labels.exists():
         labels = root / "labels" / "train"
     return train, labels
@@ -361,6 +361,51 @@ def generate_from_plan(
                     f"[WARN] 기존 synthetic 파일이 검증에 실패해 재생성합니다: {output_image.name} "
                     f"({metrics['verification_fail_reason']})"
                 )
+            rejected_marker = rejected_dir / output_name
+            if (
+                not output_image.exists()
+                and rejected_marker.exists()
+                and not force
+                and not dry_run
+                and not stale_from_dry_run
+            ):
+                # A previous run already attempted this exact (source, prompt,
+                # attempt_seed) and rejected it. Generation is seed-deterministic,
+                # so re-running the diffusion would reproduce the rejection —
+                # count the attempt without spending GPU time on it.
+                logs.append(
+                    {
+                        "source_image": str(source_image),
+                        "output_image": str(
+                            canonical_rejected_dir / output_name if canonical_rejected_dir else rejected_marker
+                        ),
+                        "class_id": class_id,
+                        "class_name": row.get("class_name", f"class_{class_id}"),
+                        "prompt": prompt,
+                        "seed": attempt_seed,
+                        "accepted": False,
+                        "reject_reason": "previous_run_rejected",
+                        "dry_run": False,
+                        "bbox_pixel_diff": float("nan"),
+                        "background_pixel_diff": float("nan"),
+                        "background_ssim": None,
+                        "lpips": None,
+                        "verification_passed": False,
+                        "verification_fail_reason": "previous_run_rejected",
+                        "mask_padding": padding_ratio,
+                        "inference_steps": diffusion_cfg.get("num_inference_steps", 20),
+                        "label_count_original": len(labels),
+                        "label_count_output": 0,
+                        "label_sanity_ok": False,
+                        "output_exists": rejected_marker.exists(),
+                        "output_size_matches": False,
+                        "nontrivial_image": False,
+                    }
+                )
+                timer.update()
+                image_bar.update(1)
+                image_bar.set_postfix_str(timer.status())
+                continue
             mask, padded_boxes, original_boxes = create_inpainting_mask(
                 original.size,
                 labels,

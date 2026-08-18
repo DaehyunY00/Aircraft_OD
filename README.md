@@ -225,6 +225,95 @@ VLM, CLIP, Grounding DINO, SAM 기반 필터링은 사용하지 않습니다. Di
 
 `outputs/analysis/dataset_summary.csv`에는 split별 이미지 수, bbox 수, 클래스 수, train imbalance ratio가 저장됩니다.
 
+## IJASS Confirmatory Experiment TODO
+
+현재 논문 결론을 방어하기 위한 확인 실험이다. 기존 `outputs_full/`, `outputs_gate/`,
+`outputs_mad103/`는 보존하고, 새 결과는 `outputs_confirmatory/`와
+`synthetic_confirmatory/`에만 기록한다. Codex CLI 실행 지시는
+[`CODEX_GCLOUD_PROMPT.md`](CODEX_GCLOUD_PROMPT.md)에 있다.
+
+### 예상 Google Cloud 리소스
+
+- 기준: `us-central1`, on-demand `g2-standard-8`+L4는 약 $0.8536/h,
+  `n1-standard-8`+T4는 약 $0.7300/h, 100 GB `pd-balanced`는 약 $0.0137/h.
+- 저장된 실측값: diffusion arm 1회 학습 평균 1.442 L4 h, RFS 1회 2.510 L4 h,
+  synthetic 1,000장 생성 약 3.5 T4 h.
+- 최소 확인 실험: diffusion 4 arms×3 seeds=17.3 L4 h + RFS seeds 43/44=5.0 L4 h.
+- 기존 synthetic을 manifest/hash 검증 후 보정 재사용할 경우: 생성 약 3.6 T4 h,
+  총 약 30시간, 15% 여유 포함 약 $26.
+- 네 synthetic pool을 전량 재생성할 경우: 생성 약 14 T4 h,
+  총 약 42시간, 15% 여유 포함 약 $35.
+- 프로젝트의 전체 GPU quota가 1이므로 병렬 실행하지 않는다. `--max-run-duration=12h`
+  기준으로 각각 약 3회 또는 4회 세션이 필요하다.
+- 위 금액은 세금, 환율, 대규모 network egress를 제외한 추정치다. 확인 실험 hard cap은 $45다.
+
+### P0 — 실험 설계 및 구현
+
+- [ ] `_allocate_by_weights`를 deterministic capped largest-remainder로 수정한다.
+- [ ] B=1,000/K=13 uniform 결과가 12×77+1×76인지 단위 테스트한다.
+- [ ] 모든 plan의 합계, min/max bounds, deterministic tie-breaking을 테스트한다.
+- [ ] `tail/weak × uniform/weighted` 2×2 arm을 구현한다.
+- [ ] 누락된 `aug_weak_uniform_inpaint` arm을 추가한다.
+- [ ] `configs/confirmatory.yaml`을 만들고 seeds 42/43/44, val-only planning,
+  test-only final reporting을 고정한다.
+- [ ] test 확인 전에 plan, primary interaction contrast, multiplicity policy를 freeze하고 hash를 남긴다.
+
+### P0 — GCloud 실행
+
+- [ ] `pytest`와 CPU plan dry-run이 모두 통과하는지 확인한다.
+- [ ] gcloud account/project, 실행 중 instance/disk, L4/T4 quota 및 zone 재고를 확인한다.
+- [ ] L4-only 실행 비용이 $45 hard cap 이내인지 다시 계산한다.
+- [ ] 기존 synthetic의 model/config/source/label/QC manifest와 hash를 검증한다.
+- [ ] 검증 성공 시 부족분+신규 weak-uniform만 생성하고, 실패 시 네 pool을 전량 재생성한다.
+- [ ] 네 diffusion arm을 seeds 42/43/44로 학습한다(총 12 runs).
+- [ ] 기존 RFS seed 42 fingerprint를 검증하고 seeds 43/44를 추가한다.
+- [ ] 각 run 종료 후 weights, metrics, config, logs, manifest를 durable storage에 동기화한다.
+- [ ] 12시간 단위 phase 종료·실패 시 VM을 자동 정지하고 다음 세션에서 resume한다.
+- [ ] 완료 후 checksum을 검증하고 VM을 stop한다. 디스크 삭제는 별도 확인 후 수행한다.
+
+### P0 — 통계 및 논문 판정
+
+- [ ] seed별 all/tail/weak mAP50-95와 arm별 mean/SD/95% CI를 산출한다.
+- [ ] policy×scope interaction 또는 동등한 사전 정의 contrast를 검정한다.
+- [ ] primary comparisons에 Holm 보정을 적용한다.
+- [ ] uniform-vs-weighted 효과와 CI를 두 class set에서 모두 보고한다.
+- [ ] 단일 seed treatment와 3-seed baseline 평균을 직접 비교하지 않는다.
+- [ ] 실제 GPU-hour, 비용, 재시도, run fingerprint를 `RESULTS_CONFIRMATORY.md`에 기록한다.
+
+### P1 — 강한 부가 주장 유지 시
+
+- [ ] 450장 hallucination audit를 arm-blinded 두 명의 판독자가 전수 판독한다.
+- [ ] detector gate의 precision/recall, arm별 수동 확인 prevalence와 95% CI를 계산한다.
+- [ ] object gate를 1,000장으로 재보충한 budget-matched 조건에서 3 seeds로 재실험한다.
+- [ ] corrected oversampling/copy-paste를 각 3 seeds로 실행하거나 descriptive baseline으로 낮춘다.
+- [ ] MAD103 seeds 43/44를 추가하고 test AP가 정의된 101개 class로 표본 수를 정정한다.
+- [ ] 실제 공개 저장소에 plans, logs, per-class metrics와 재현 manifest를 배포한다.
+
+## Tier 2 확장 실험 (MAR20 + RT-DETR-L)
+
+타겟 논문 Li et al. (ECCV 2024, arXiv:2408.00350) 대비 일반화 축 2개를
+추가한 확장 실험이다. 설계·비용·실행 절차는 [`TIER2_PLAN.md`](TIER2_PLAN.md),
+결과는 실험 종료 후 `RESULTS_TIER2.md`에 기록한다.
+
+- **C2** `configs/mad_rtdetr.yaml` — MAD × RT-DETR-L (아키텍처 일반화, 축소 arm)
+- **C3** `configs/mar20_yolo.yaml` — MAR20 × YOLOv8n (시점 일반화, 2×2 전체 재현)
+- **C4** `configs/mar20_rtdetr.yaml` — MAR20 × RT-DETR-L (교차 cell, 축소 arm)
+
+MAR20은 자동 다운로드가 없다 — NWPU 배포 링크에서 수동 다운로드 후
+`dataset.mar20_raw` 경로에 배치하면 `src/data/prepare_mar20.py`가 VOC XML(HBB)을
+YOLO 포맷으로 변환한다 (공식 test 2,511장 보존, 공식 train 1,331장을 stratified
+80/20 train/val 분할). RT-DETR 계열 모델은 `src/utils/detector.py`가 RTDETR
+클래스로 로드한다 (YOLO 클래스로 열면 NMS 전제 후처리가 잘못 적용됨).
+
+GCP 실행(spot, hard cap $60):
+
+```bash
+bash scripts/run_tier2_gcp.sh prepare /path/to/MAR20
+bash scripts/run_tier2_gcp.sh create
+bash scripts/run_tier2_gcp.sh watch
+bash scripts/run_tier2_gcp.sh download
+```
+
 ## Tests
 
 실제 데이터셋 없이 빠르게 실행됩니다.

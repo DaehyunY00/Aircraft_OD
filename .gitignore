@@ -24,3 +24,13 @@ kaggle.json
 # 생성된 synthetic 이미지 (Drive 보존, git 대상 아님)
 synthetic_full/
 synthetic_pilot/
+
+# 확인(2026-07)·확장(2026-08) 실험 산출물 — Drive 보존, git 제외
+outputs_confirmatory/
+outputs_gate/
+outputs_mad103/
+outputs_mad_rtdetr/
+outputs_mar20_rtdetr/
+outputs_mar20_yolo/
+synthetic_confirmatory/
+.DS_Store

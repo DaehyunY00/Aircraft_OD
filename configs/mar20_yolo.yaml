@@ -1,0 +1,165 @@
+# Tier 2 / C3 — MAR20 × YOLOv8n (데이터셋/시점 일반화 cell, 2×2 전체).
+#
+# 목적: ① Li et al.(ECCV 2024) 배경 인페인팅이 원격탐사 시점(위성 오버헤드)의
+# 군용기 검출에서도 유효한가. ② C1에서 확인한 set×scope interaction(배분 위치
+# 신호)이 두 번째 데이터셋에서 재현되는가.
+#
+# MAR20 프로토콜:
+#   - 공식 test 2,511장은 최종 보고 전용으로 보존.
+#   - 공식 train 1,331장을 stratified 80/20으로 train/val 분할 (split_seed 42).
+#   - 20클래스 × bottom_percent 0.3 → tail 6클래스. weak도 6클래스 (val AP 하위,
+#     사전 pin 없음 — basic_aug 학습 후 결정, margin이 좁으면 pin 후 기록).
+#   - budget 500 / 클래스당 상한 100: 클래스당 quota(~83)가 MAD의 77과 비슷하고
+#     합성 비중이 train의 절반 이하로 유지됨 (사용자 승인 2026-08-07).
+#   - 프롬프트는 위성뷰 전용으로 교체 — 오버헤드 영상에 sky/horizon이 생기면
+#     안 되므로 negative prompt로 차단.
+
+dataset:
+  format: "mar20_voc"
+  mar20_raw: "/content/data/mar20_raw"      # 공식 아카이브 수동 배치 경로
+  val_fraction: 0.2
+  split_seed: 42
+
+paths:
+  root: "/content/drive/MyDrive/Military_OD"
+  raw_data: "/content/data/mar20_yolo"      # 변환 결과 (C3/C4 공유)
+  processed_data: "/content/data/processed_mar20"   # 정규화 base (C3/C4 공유)
+  experiments_data: "/content/data/experiments_mar20_yolo"
+  synthetic_data: "/content/drive/MyDrive/Military_OD/synthetic_mar20"   # C3/C4 공유 pool
+  outputs: "/content/drive/MyDrive/Military_OD/outputs_mar20_yolo"
+
+mode:
+  smoke_test: false
+  max_images_per_split: null
+  max_classes: null
+
+detector:
+  model: "yolov8n.pt"
+  imgsz: 640
+  epochs: 50
+  batch: -1
+  workers: 8
+  patience: 15
+  seeds: [42, 43, 44]
+
+eval:
+  split: "test"          # 공식 test — 최종 보고 전용
+planning:
+  split: "val"
+  baseline_variant: "basic_aug"
+
+tail:
+  method: "bottom_percent"
+  bottom_percent: 0.3     # 20클래스 → tail 6
+  min_val_instances: 5
+  group_thresholds:       # MAR20 인스턴스 규모(총 ~2.2만, train ~4.5천)에 맞춘 병행 보고 경계
+    tail_max_instances: 100
+    medium_max_instances: 250
+
+statistics:
+  comparison_pairs:
+    - ["aug_uniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "basic_aug"]
+    - ["aug_weakness_inpaint", "basic_aug"]
+    - ["aug_weakuniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "aug_uniform_inpaint"]
+    - ["aug_weakness_inpaint", "aug_weakuniform_inpaint"]
+    - ["aug_rfs", "basic_aug"]
+  confidence: 0.95
+
+# C1(confirmatory.yaml)과 동일한 5-contrast family — 재현 검정.
+confirmatory:
+  baseline: "basic_aug"
+  arms:
+    tail_uniform: "aug_uniform_inpaint"
+    tail_weighted: "aug_selective_inpaint"
+    weak_uniform: "aug_weakuniform_inpaint"
+    weak_weighted: "aug_weakness_inpaint"
+  seeds: [42, 43, 44]
+  confidence: 0.95
+  primary_contrasts:
+    - name: "tail_arms_vs_baseline_in_tail"
+      scope: "tail"
+      plus: ["aug_uniform_inpaint", "aug_selective_inpaint"]
+      minus: ["basic_aug"]
+    - name: "weak_arms_vs_baseline_in_weak"
+      scope: "weak"
+      plus: ["aug_weakuniform_inpaint", "aug_weakness_inpaint"]
+      minus: ["basic_aug"]
+    - name: "interaction_set_by_scope"
+      interaction: true
+    - name: "weighted_vs_uniform_in_tail"
+      scope: "tail"
+      plus: ["aug_selective_inpaint"]
+      minus: ["aug_uniform_inpaint"]
+    - name: "weighted_vs_uniform_in_weak"
+      scope: "weak"
+      plus: ["aug_weakness_inpaint"]
+      minus: ["aug_weakuniform_inpaint"]
+
+selective_generation:
+  alpha: 0.6
+  total_synthetic_budget: 500
+  min_per_class: 5
+  weakness_num_classes: 6
+  max_per_class: 100
+
+diffusion:
+  model_id: "runwayml/stable-diffusion-inpainting"
+  torch_dtype: "float16"
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  strength: 0.85
+  resolution: 512
+  mask_padding_ratio: 0.10
+  mask_blur_radius: 12
+  bbox_diff_threshold: 18.0
+  enable_attention_slicing: true
+  enable_xformers_if_available: true
+  prompts:   # 위성/오버헤드 전용 — 본 생성 전 50장 파일럿으로 QC 통과율 확인
+    - "aerial satellite view of airport apron, concrete tarmac with faded lane markings, top-down view, high resolution satellite imagery"
+    - "top-down aerial view of military airbase runway and taxiway, asphalt surface, satellite photography"
+    - "overhead satellite view of dry grass and soil beside airport taxiway, realistic aerial imagery"
+    - "top-down view of empty concrete aircraft parking stands, tire marks and oil stains, satellite imagery"
+    - "aerial satellite view of desert airfield ground, sand and weathered pavement, overhead imagery"
+  negative_prompt: "aircraft, airplane, jet, extra aircraft, duplicate aircraft, deformed aircraft, vehicle, sky, clouds, horizon, oblique perspective, side view, text, watermark, low quality, blurry"
+
+verification:
+  min_background_change: 10.0
+  max_bbox_protected_change: 5.0
+  min_editable_background_ratio: 0.05
+  max_retries_per_image: 2
+  max_failure_rate: 0.5
+  budget_attempt_multiplier: 2
+  compute_lpips: false
+  lpips_max_side: 512
+
+synthetic_quality:
+  enabled: true
+  max_images: 200
+  fid_feature_dim: 2048
+
+quality_filter:
+  enabled: false
+  clip_score_percentile: 50
+  max_refill_rounds: 1
+
+copy_paste:
+  scale_jitter: [0.5, 1.5]
+  horizontal_flip_prob: 0.5
+  max_paste_attempts: 10
+  max_overlap_iou: 0.3
+
+rfs:
+  threshold: 0.1
+
+experiments:
+  baseline_variants:      # MAR20 참고 하한선(real_only)은 저렴하므로 이 cell에서만 유지
+    - real_only
+    - basic_aug
+  variants:
+    - aug_rfs
+    - aug_uniform_inpaint
+    - aug_selective_inpaint
+    - aug_weakness_inpaint
+    - aug_weakuniform_inpaint

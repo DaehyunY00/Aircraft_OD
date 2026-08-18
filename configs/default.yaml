@@ -9,6 +9,12 @@ paths:
 kaggle:
   dataset: "rookieengg/military-aircraft-detection-dataset-yolo-format"
 
+dataset:
+  format: "yolo"        # "mar20_voc": dataset.mar20_raw의 MAR20 VOC 아카이브를 YOLO로 변환
+  mar20_raw: null       # MAR20 공식 아카이브 압축 해제 경로 (수동 배치)
+  val_fraction: 0.2     # MAR20 공식 train에서 떼어낼 val 비율 (공식 test는 보존)
+  split_seed: 42        # val 분할 seed — detector.seeds와 무관하게 고정
+
 mode:
   smoke_test: true
   max_images_per_split: 200
@@ -97,6 +103,9 @@ rfs:
   threshold: 0.1                     # r(c)=max(1, sqrt(t/f(c))). 0.01은 이 데이터셋(최소 freq~0.02)에서 no-op이라 상향
 
 experiments:
+  baseline_variants:    # base 데이터셋으로 먼저 학습할 baseline (planning baseline은 자동 보정 포함)
+    - real_only
+    - basic_aug
   variants:
     - real_only
     - basic_aug

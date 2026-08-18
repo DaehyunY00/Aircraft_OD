@@ -15,6 +15,7 @@ scikit-learn
 imagehash
 pytest
 scipy
+tabulate                     # pandas.to_markdown 의존 — 없으면 통계 md 렌더링만 조용히 실패
 # [image] pulls torch-fidelity (FrechetInceptionDistance hard-requires it;
 # without it every FID silently became NaN), [multimodal] covers CLIPScore deps.
 torchmetrics[image,multimodal]

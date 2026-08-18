@@ -31,7 +31,7 @@ import yaml
 from scipy.stats import pearsonr, spearmanr
 
 from src.utils.io import ensure_dir
-from src.utils.yolo import normalize_class_names
+from src.utils.yolo import labels_dir_for_images_dir, normalize_class_names
 
 # 주 실험과 동일한 비율: 43클래스 중 하위 13개 = 30%.
 BOTTOM_FRACTION = 0.30
@@ -43,7 +43,7 @@ def train_instance_counts(data_yaml: Path) -> Counter:
     train = Path(data.get("train", "images/train"))
     if not train.is_absolute():
         train = root / train
-    labels_dir = Path(str(train).replace("/images/", "/labels/"))
+    labels_dir = labels_dir_for_images_dir(train)
     counts: Counter = Counter()
     for label_path in labels_dir.glob("*.txt"):
         for line in label_path.read_text(encoding="utf-8").splitlines():

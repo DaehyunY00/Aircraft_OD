@@ -1,0 +1,146 @@
+# Tier 2 / C4 — MAR20 × RT-DETR-L (데이터셋 × 아키텍처 교차 cell).
+#
+# 목적: 위성 시점(MAR20)에서도 인페인팅 이득이 transformer 검출기로 이식되는가.
+# 설계 요약:
+#   - arm: basic_aug + {uniform, selective} tail inpaint + RFS. weak arms 없음 (C2와 동일 축소 설계).
+#   - MAR20 변환/정규화 산출물(raw_data, processed_data)은 C3와 공유 — 동일 split 보장.
+#   - synthetic pool도 C3와 공유: 파일명·내용이 (source, plan, class, idx, seed42)에
+#     결정적이라 uniform pool은 전량 재사용, selective는 RT-DETR plan과 겹치는
+#     (class, idx)만큼 재사용된다.
+#   - selective plan은 RT-DETR 자신의 basic_aug val AP로 재계산 (검출기별 weakness).
+#   - diffusion/verification/tail/프롬프트는 mar20_yolo.yaml과 문자 그대로 동일.
+
+dataset:
+  format: "mar20_voc"
+  mar20_raw: "/content/data/mar20_raw"
+  val_fraction: 0.2
+  split_seed: 42
+
+paths:
+  root: "/content/drive/MyDrive/Military_OD"
+  raw_data: "/content/data/mar20_yolo"      # C3와 공유 (변환은 멱등)
+  processed_data: "/content/data/processed_mar20"
+  experiments_data: "/content/data/experiments_mar20_rtdetr"
+  synthetic_data: "/content/drive/MyDrive/Military_OD/synthetic_mar20"   # C3와 공유 pool
+  outputs: "/content/drive/MyDrive/Military_OD/outputs_mar20_rtdetr"
+
+mode:
+  smoke_test: false
+  max_images_per_split: null
+  max_classes: null
+
+detector:
+  model: "rtdetr-l.pt"
+  imgsz: 640
+  epochs: 50
+  batch: 8              # L4 24GB 기준 보수값. auto(-1)는 RT-DETR에서 사용 금지.
+  workers: 8
+  patience: 15
+  seeds: [42, 43, 44]
+
+eval:
+  split: "test"
+planning:
+  split: "val"
+  baseline_variant: "basic_aug"
+
+tail:
+  method: "bottom_percent"
+  bottom_percent: 0.3
+  min_val_instances: 5
+  group_thresholds:
+    tail_max_instances: 100
+    medium_max_instances: 250
+
+statistics:
+  comparison_pairs:
+    - ["aug_uniform_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "basic_aug"]
+    - ["aug_selective_inpaint", "aug_uniform_inpaint"]
+    - ["aug_rfs", "basic_aug"]
+  confidence: 0.95
+
+confirmatory:
+  baseline: "basic_aug"
+  arms:
+    tail_uniform: "aug_uniform_inpaint"
+    tail_weighted: "aug_selective_inpaint"
+  seeds: [42, 43, 44]
+  confidence: 0.95
+  primary_contrasts:
+    - name: "tail_arms_vs_baseline_in_tail"
+      scope: "tail"
+      plus: ["aug_uniform_inpaint", "aug_selective_inpaint"]
+      minus: ["basic_aug"]
+    - name: "uniform_vs_baseline_all"
+      scope: "all"
+      plus: ["aug_uniform_inpaint"]
+      minus: ["basic_aug"]
+    - name: "weighted_vs_uniform_in_tail"
+      scope: "tail"
+      plus: ["aug_selective_inpaint"]
+      minus: ["aug_uniform_inpaint"]
+
+selective_generation:
+  alpha: 0.6
+  total_synthetic_budget: 500
+  min_per_class: 5
+  weakness_num_classes: 6
+  max_per_class: 100
+
+diffusion:
+  model_id: "runwayml/stable-diffusion-inpainting"
+  torch_dtype: "float16"
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  strength: 0.85
+  resolution: 512
+  mask_padding_ratio: 0.10
+  mask_blur_radius: 12
+  bbox_diff_threshold: 18.0
+  enable_attention_slicing: true
+  enable_xformers_if_available: true
+  prompts:
+    - "aerial satellite view of airport apron, concrete tarmac with faded lane markings, top-down view, high resolution satellite imagery"
+    - "top-down aerial view of military airbase runway and taxiway, asphalt surface, satellite photography"
+    - "overhead satellite view of dry grass and soil beside airport taxiway, realistic aerial imagery"
+    - "top-down view of empty concrete aircraft parking stands, tire marks and oil stains, satellite imagery"
+    - "aerial satellite view of desert airfield ground, sand and weathered pavement, overhead imagery"
+  negative_prompt: "aircraft, airplane, jet, extra aircraft, duplicate aircraft, deformed aircraft, vehicle, sky, clouds, horizon, oblique perspective, side view, text, watermark, low quality, blurry"
+
+verification:
+  min_background_change: 10.0
+  max_bbox_protected_change: 5.0
+  min_editable_background_ratio: 0.05
+  max_retries_per_image: 2
+  max_failure_rate: 0.5
+  budget_attempt_multiplier: 2
+  compute_lpips: false
+  lpips_max_side: 512
+
+synthetic_quality:
+  enabled: true
+  max_images: 200
+  fid_feature_dim: 2048
+
+quality_filter:
+  enabled: false
+  clip_score_percentile: 50
+  max_refill_rounds: 1
+
+copy_paste:
+  scale_jitter: [0.5, 1.5]
+  horizontal_flip_prob: 0.5
+  max_paste_attempts: 10
+  max_overlap_iou: 0.3
+
+rfs:
+  threshold: 0.1
+
+experiments:
+  baseline_variants:
+    - basic_aug
+  variants:
+    - aug_rfs
+    - aug_uniform_inpaint
+    - aug_selective_inpaint
