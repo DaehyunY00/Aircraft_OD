@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,8 @@ def _config() -> dict:
     return {
         "detector": {"seeds": [42]},
         "diffusion": {
+            "model_id": "example/inpaint-model",
+            "revision": "test-revision",
             "mask_padding_ratio": 0.08,
             "mask_blur_radius": 2,
             "num_inference_steps": 1,
@@ -100,6 +103,12 @@ def test_real_run_after_dry_run_regenerates_everything(env: dict, monkeypatch: p
     assert not (log["reject_reason"] == "already_exists_verified").any()
     assert (log["background_pixel_diff"] >= 10.0).all()
     assert not (env["synthetic"] / "uniform" / ib.DRY_RUN_MARKER_NAME).exists()
+    metadata_path = env["outputs"] / "synthetic" / "generation_environment_uniform.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["model_id"] == "example/inpaint-model"
+    assert metadata["requested_revision"] == "test-revision"
+    assert metadata["resolved_revision"] == "test-revision"
+    assert metadata["packages"]["diffusers"]
 
 
 def test_resume_verifies_existing_files(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,6 +117,7 @@ def test_resume_verifies_existing_files(env: dict, monkeypatch: pytest.MonkeyPat
         env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
         plan_name="uniform", dry_run=False,
     )
+    first_log = _log(env).set_index("output_image")[["generation_seed", "retry_index"]]
     ib.generate_from_plan(
         env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
         plan_name="uniform", dry_run=False,
@@ -115,16 +125,42 @@ def test_resume_verifies_existing_files(env: dict, monkeypatch: pytest.MonkeyPat
     log = _log(env)
     assert (log["reject_reason"] == "already_exists_verified").all()
     assert bool(log["verification_passed"].all())
+    resumed = log.set_index("output_image")[["generation_seed", "retry_index"]]
+    pd.testing.assert_frame_equal(first_log, resumed, check_dtype=False)
+
+
+def test_retry_logs_actual_generation_seed(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def succeeds_on_retry(pipe, device, image, mask, prompt, negative_prompt, diffusion_cfg, seed):
+        calls["n"] += 1
+        if calls["n"] % 2 == 1:
+            return image.copy()
+        return _fake_background_inpaint(pipe, device, image, mask, prompt, negative_prompt, diffusion_cfg, seed)
+
+    monkeypatch.setattr(ib, "_run_inpaint", succeeds_on_retry)
+    ib.generate_from_plan(
+        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+        plan_name="uniform", dry_run=False,
+    )
+    accepted = _log(env).loc[lambda frame: frame["accepted"].astype(bool)]
+    assert len(accepted) == 2
+    assert (accepted["retry_index"].astype(int) == 1).all()
+    assert (
+        accepted["generation_seed"].astype(int)
+        == accepted["seed"].astype(int) + accepted["retry_index"].astype(int)
+    ).all()
 
 
 def test_stale_original_copies_are_not_reused(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a stale state where synthetic files are byte copies of the
     # originals but no dry-run marker exists (e.g. produced by the old code).
     monkeypatch.setattr(ib, "_run_inpaint", _noop_inpaint)
-    ib.generate_from_plan(
-        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
-        plan_name="uniform", dry_run=False,
-    )
+    with pytest.raises(RuntimeError, match="고정 synthetic budget"):
+        ib.generate_from_plan(
+            env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+            plan_name="uniform", dry_run=False,
+        )
     log = _log(env)
     assert not bool(log["accepted"].any())
     assert log["reject_reason"].str.startswith("verification_failed").all()
@@ -158,14 +194,27 @@ def test_budget_refill_reaches_target_when_some_attempts_fail(env: dict, monkeyp
 def test_budget_loop_is_capped_when_all_attempts_fail(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     env["config"]["verification"]["max_retries_per_image"] = 0
     monkeypatch.setattr(ib, "_run_inpaint", _noop_inpaint)
-    ib.generate_from_plan(
-        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
-        plan_name="uniform", dry_run=False,
-    )
+    with pytest.raises(RuntimeError, match="고정 synthetic budget"):
+        ib.generate_from_plan(
+            env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+            plan_name="uniform", dry_run=False,
+        )
     log = _log(env)
     assert not bool(log["accepted"].any())
     # needed=2, budget_attempt_multiplier=3 -> capped at 6 attempts (no infinite loop)
     assert len(log) == 6
+
+
+def test_missing_eligible_source_aborts_fixed_budget_plan(env: dict) -> None:
+    pd.DataFrame(
+        [{"class_id": 99, "class_name": "missing", "num_synthetic_images": 2}]
+    ).to_csv(env["plan"], index=False)
+    with pytest.raises(RuntimeError, match="no_eligible_source"):
+        ib.generate_from_plan(
+            env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+            plan_name="uniform", dry_run=False,
+        )
+    assert (env["outputs"] / "synthetic" / "generation_log_uniform.csv").exists()
 
 
 def test_noop_generation_is_rejected_and_removed_from_train(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,10 +227,11 @@ def test_noop_generation_is_rejected_and_removed_from_train(env: dict, monkeypat
     # Regenerate with force: the no-op generator must fail verification and
     # previously accepted files must be removed from the train split.
     monkeypatch.setattr(ib, "_run_inpaint", _noop_inpaint)
-    ib.generate_from_plan(
-        env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
-        plan_name="uniform", dry_run=False, force=True,
-    )
+    with pytest.raises(RuntimeError, match="고정 synthetic budget"):
+        ib.generate_from_plan(
+            env["data_yaml"], env["plan"], env["synthetic"], env["outputs"], env["config"],
+            plan_name="uniform", dry_run=False, force=True,
+        )
     log = _log(env)
     assert not bool(log["accepted"].any())
     assert list((env["synthetic"] / "uniform" / "images" / "train").glob("*.jpg")) == []

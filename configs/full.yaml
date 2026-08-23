@@ -61,6 +61,7 @@ selective_generation:
 
 diffusion:
   model_id: "runwayml/stable-diffusion-inpainting"
+  revision: "8a4288a76071f7280aedbdb3253bdb9e9d5d84bb"
   torch_dtype: "float16"
   num_inference_steps: 20
   guidance_scale: 7.5

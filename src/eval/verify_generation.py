@@ -270,6 +270,8 @@ def reverify_from_log(
                 "class_name": record.get("class_name"),
                 "prompt": record.get("prompt"),
                 "seed": record.get("seed"),
+                "generation_seed": record.get("generation_seed"),
+                "retry_index": record.get("retry_index"),
                 "accepted": passed,
                 **metrics,
             }

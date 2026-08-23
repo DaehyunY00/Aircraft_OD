@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from importlib import metadata as importlib_metadata
+import json
+import platform
 import sys
 import time
 from pathlib import Path
@@ -97,12 +100,15 @@ def load_inpaint_pipeline(diffusion_cfg: dict[str, Any]):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = _torch_dtype(diffusion_cfg.get("torch_dtype", "float16")) if device == "cuda" else torch.float32
     model_id = diffusion_cfg.get("model_id", "runwayml/stable-diffusion-inpainting")
-    pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        model_id,
-        torch_dtype=dtype,
-        safety_checker=None,
-        requires_safety_checker=False,
-    )
+    load_kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "safety_checker": None,
+        "requires_safety_checker": False,
+    }
+    revision = diffusion_cfg.get("revision")
+    if revision:
+        load_kwargs["revision"] = str(revision)
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(model_id, **load_kwargs)
     pipe = pipe.to(device)
     if diffusion_cfg.get("enable_attention_slicing", True):
         pipe.enable_attention_slicing()
@@ -112,6 +118,81 @@ def load_inpaint_pipeline(diffusion_cfg: dict[str, Any]):
         except Exception:
             pass
     return pipe, device
+
+
+def _installed_version(distribution: str) -> str | None:
+    try:
+        return importlib_metadata.version(distribution)
+    except importlib_metadata.PackageNotFoundError:
+        return None
+
+
+def _pipeline_commit_hash(pipe: Any) -> str | None:
+    config = getattr(pipe, "config", None)
+    if config is None:
+        return None
+    if hasattr(config, "get"):
+        value = config.get("_commit_hash")
+    else:
+        value = getattr(config, "_commit_hash", None)
+    return str(value) if value else None
+
+
+def write_generation_environment(
+    outputs: str | Path,
+    plan_name: str,
+    diffusion_cfg: dict[str, Any],
+    pipe: Any,
+    device: str,
+) -> Path:
+    """Persist the model revision and actual runtime versions used for generation."""
+    import torch
+
+    requested_revision = diffusion_cfg.get("revision")
+    resolved_revision = _pipeline_commit_hash(pipe) or requested_revision
+    cuda_name = None
+    if torch.cuda.is_available():
+        cuda_name = torch.cuda.get_device_name(torch.cuda.current_device())
+    payload = {
+        "model_id": diffusion_cfg.get("model_id", "runwayml/stable-diffusion-inpainting"),
+        "requested_revision": str(requested_revision) if requested_revision else None,
+        "resolved_revision": str(resolved_revision) if resolved_revision else None,
+        "device": device,
+        "cuda_device_name": cuda_name,
+        "cuda_version": getattr(torch.version, "cuda", None),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "packages": {
+            name: _installed_version(name)
+            for name in (
+                "diffusers",
+                "transformers",
+                "torch",
+                "accelerate",
+                "safetensors",
+                "Pillow",
+                "xformers",
+            )
+        },
+        "inference": {
+            "torch_dtype": diffusion_cfg.get("torch_dtype", "float16"),
+            "num_inference_steps": int(diffusion_cfg.get("num_inference_steps", 20)),
+            "guidance_scale": float(diffusion_cfg.get("guidance_scale", 7.5)),
+            "strength": float(diffusion_cfg.get("strength", 0.85)),
+            "resolution": int(diffusion_cfg.get("resolution", 512)),
+            "mask_padding_ratio": float(diffusion_cfg.get("mask_padding_ratio", 0.1)),
+            "mask_blur_radius": int(diffusion_cfg.get("mask_blur_radius", 8)),
+            "attention_slicing": bool(diffusion_cfg.get("enable_attention_slicing", True)),
+            "xformers_if_available": bool(diffusion_cfg.get("enable_xformers_if_available", True)),
+        },
+    }
+    path = Path(outputs) / "synthetic" / f"generation_environment_{plan_name}.json"
+    write_with_retry(
+        path,
+        lambda: path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"),
+        f"생성 환경 저장 {path.name}",
+    )
+    return path
 
 
 def _split_dirs(data_yaml: str | Path) -> tuple[Path, Path]:
@@ -239,6 +320,23 @@ def generate_from_plan(
     canonical_rejected_dir = ensure_dir(out_root / "rejected") if plan_name == "selective" else None
     synthetic_dir = ensure_dir(Path(outputs) / "synthetic")
     debug_dir = ensure_dir(synthetic_dir / "debug_masks" / plan_name)
+    log_path = synthetic_dir / f"generation_log_{plan_name}.csv"
+    prior_seed_metadata: dict[str, dict[str, int | None]] = {}
+    if log_path.exists():
+        try:
+            prior_log = pd.read_csv(log_path)
+            for record in prior_log.to_dict("records"):
+                output_name = Path(str(record.get("output_image", ""))).name
+                if not output_name:
+                    continue
+                generation_seed = record.get("generation_seed")
+                retry_index = record.get("retry_index")
+                prior_seed_metadata[output_name] = {
+                    "generation_seed": int(generation_seed) if pd.notna(generation_seed) else None,
+                    "retry_index": int(retry_index) if pd.notna(retry_index) else None,
+                }
+        except Exception as exc:
+            print(f"[WARN] 이전 생성 로그의 seed metadata를 읽지 못했습니다: {log_path} ({exc})")
 
     dry_run_marker = out_root / plan_name / DRY_RUN_MARKER_NAME
     stale_from_dry_run = False
@@ -265,6 +363,8 @@ def generate_from_plan(
     lpips_fn = None
     if not dry_run:
         pipe, device = load_inpaint_pipeline(diffusion_cfg)
+        environment_path = write_generation_environment(outputs, plan_name, diffusion_cfg, pipe, device)
+        print(f"[INFO] 생성 환경 저장: {environment_path}")
         if ver_cfg["compute_lpips"]:
             lpips_fn = make_lpips_scorer(ver_cfg["lpips_max_side"])
 
@@ -272,6 +372,9 @@ def generate_from_plan(
     negative_prompt = diffusion_cfg.get("negative_prompt", "")
     logs: list[dict[str, Any]] = []
     contact_rows: list[list[Image.Image]] = []
+    underfilled_classes: list[tuple[int, int, int, str]] = []
+    budget_column = plan.get("num_synthetic_images", pd.Series(dtype=int))
+    planned_budget = int(budget_column.fillna(0).astype(int).clip(lower=0).sum())
     total_images = int(
         sum(
             int(row.get("num_synthetic_images", 0))
@@ -291,7 +394,14 @@ def generate_from_plan(
         raw_start = row.get("start_index", 0)
         start_index = int(raw_start) if pd.notna(raw_start) else 0
         sources = source_by_class.get(class_id, [])
-        if needed <= 0 or not sources:
+        if needed <= 0:
+            continue
+        if not sources:
+            underfilled_classes.append((class_id, needed, 0, "no_eligible_source"))
+            print(
+                f"[ERROR] class {class_id}: 목표 budget {needed}장을 생성할 eligible source가 없습니다. "
+                "고정-budget 불변식을 만족할 수 없으므로 plan을 실패 처리합니다."
+            )
             continue
         # Budget-based generation: keep advancing the index (new source + seed)
         # until `needed` images pass verification, so verification rejects are
@@ -310,6 +420,7 @@ def generate_from_plan(
             output_label = label_out_dir / output_image.with_suffix(".txt").name
             canonical_output_image = canonical_image_dir / output_name if canonical_image_dir else output_image
             canonical_output_label = canonical_label_dir / output_label.name if canonical_label_dir else output_label
+            prior_seed = prior_seed_metadata.get(output_name, {})
             original = load_rgb(source_image)
             labels = read_yolo_labels(source_label)
             if output_image.exists() and output_label.exists() and not force and not dry_run and not stale_from_dry_run:
@@ -333,6 +444,8 @@ def generate_from_plan(
                             "class_name": row.get("class_name", f"class_{class_id}"),
                             "prompt": prompt,
                             "seed": attempt_seed,
+                            "generation_seed": prior_seed.get("generation_seed"),
+                            "retry_index": prior_seed.get("retry_index"),
                             "accepted": True,
                             "reject_reason": "already_exists_verified",
                             "dry_run": False,
@@ -383,6 +496,8 @@ def generate_from_plan(
                         "class_name": row.get("class_name", f"class_{class_id}"),
                         "prompt": prompt,
                         "seed": attempt_seed,
+                        "generation_seed": prior_seed.get("generation_seed"),
+                        "retry_index": prior_seed.get("retry_index"),
                         "accepted": False,
                         "reject_reason": "previous_run_rejected",
                         "dry_run": False,
@@ -423,6 +538,8 @@ def generate_from_plan(
             verification_passed = False
             verification_fail_reason = ""
             generated = original.copy()
+            generation_seed: int | None = None
+            retry_index: int | None = None
             max_retries = int(ver_cfg["max_retries_per_image"])
             if dry_run:
                 # Structure-check only: the copy is written so downstream dataset
@@ -437,6 +554,8 @@ def generate_from_plan(
             else:
                 for retry in range(max_retries + 1):
                     current_seed = attempt_seed + retry
+                    generation_seed = current_seed
+                    retry_index = retry
                     try:
                         raw_generated = _run_inpaint(
                             pipe,
@@ -520,6 +639,8 @@ def generate_from_plan(
                     "class_name": row.get("class_name", f"class_{class_id}"),
                     "prompt": prompt,
                     "seed": attempt_seed,
+                    "generation_seed": generation_seed,
+                    "retry_index": retry_index,
                     "accepted": accepted,
                     "reject_reason": reject_reason,
                     "dry_run": dry_run,
@@ -543,16 +664,16 @@ def generate_from_plan(
             image_bar.update(1)
             image_bar.set_postfix_str(timer.status())
         if accepted_count < needed:
+            underfilled_classes.append((class_id, needed, accepted_count, "attempt_budget_exhausted"))
             print(
-                f"[WARN] class {class_id}: 목표 budget {needed}장 중 {accepted_count}장만 검증 통과 "
+                f"[ERROR] class {class_id}: 목표 budget {needed}장 중 {accepted_count}장만 검증 통과 "
                 f"({max_attempts}회 시도 소진). 소스 다양성 부족/배경 여지 부족 가능. "
-                "verification.budget_attempt_multiplier를 올리거나 소스를 늘리세요."
+                "로그를 저장한 뒤 고정-budget 불변식 위반으로 plan을 실패 처리합니다."
             )
     image_bar.close()
     if not dry_run and dry_run_marker.exists():
         dry_run_marker.unlink()
     log_df = pd.DataFrame(logs)
-    log_path = synthetic_dir / f"generation_log_{plan_name}.csv"
     write_with_retry(log_path, lambda: log_df.to_csv(log_path, index=False), f"생성 로그 저장 {log_path.name}")
     if plan_name == "selective":
         canonical_log = synthetic_dir / "generation_log.csv"
@@ -572,6 +693,8 @@ def generate_from_plan(
         "class_name",
         "prompt",
         "seed",
+        "generation_seed",
+        "retry_index",
         "accepted",
         "background_pixel_diff",
         "background_ssim",
@@ -585,6 +708,18 @@ def generate_from_plan(
         report_rows = log_df[[c for c in report_columns if c in log_df.columns]].to_dict("records")
         report_path = update_verification_report(outputs, plan_name, report_rows)
         print(f"[INFO] verification report 저장: {report_path}")
+    realized_budget = int(log_df["accepted"].astype(bool).sum()) if "accepted" in log_df.columns else 0
+    if underfilled_classes or realized_budget != planned_budget:
+        deficits = ", ".join(
+            f"class {class_id}: {accepted}/{needed} ({reason})"
+            for class_id, needed, accepted, reason in underfilled_classes
+        ) or "class-level deficit was not recorded"
+        raise RuntimeError(
+            f"{plan_name}: 고정 synthetic budget 미달 "
+            f"(realized={realized_budget}, planned={planned_budget}; {deficits}). "
+            "생성 로그와 verification report를 확인한 뒤 source pool 또는 "
+            "verification.budget_attempt_multiplier를 조정하세요."
+        )
     if not dry_run:
         failure_rate = enforce_failure_rate(log_df, ver_cfg["max_failure_rate"], plan_name)
         print(f"[INFO] 생성 검증 실패율: {failure_rate:.1%} (허용 한도 {ver_cfg['max_failure_rate']:.1%})")
