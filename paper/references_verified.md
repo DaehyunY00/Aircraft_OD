@@ -34,3 +34,17 @@
 - Zhao, H., et al., 2023. X-Paste: Revisiting scalable copy-paste for instance segmentation using CLIP and StableDiffusion. In: Proc. ICML 2023, PMLR 202.
 - Zhao, Y., et al., 2024. DETRs beat YOLOs on real-time object detection. In: Proc. IEEE/CVF CVPR 2024. arXiv:2304.08069.
 - Zhu, J., et al., 2024. ODGEN: Domain-specific object detection data generation with diffusion models. In: Advances in Neural Information Processing Systems 37 (NeurIPS 2024). arXiv:2405.15199.
+
+## 2026-08-21 추가 (Related Work 보강 라운드)
+- **nguyen2026tada** — Nguyen, Li, Zheng, Mirzasoleiman, "Do We Need All the
+  Synthetic Data? Targeted Image Augmentation via Diffusion Models", ICLR 2026
+  (arXiv:2505.21574). 검증: 로컬 원문 PDF 1–2쪽 직접 확인 (저자·소속·"Published
+  as a conference paper at ICLR 2026" 헤더·object-detection 실험 언급 확인).
+- **lee2026fedeas** — Lee, Park, Lee, "WHERE to Generate Matters: Budget-Aware
+  Synthetic Augmentation for Label Skewed Federated Learning", arXiv:2607.06616
+  (2026-07-07). 검증: arXiv abs 페이지 fetch (제목·저자 3인 전원·초록 확인;
+  방법명 FedEAS).
+- **fokkinga2026military** — Fokkinga, van Woerden, Eker, Snel, Hofmeijer,
+  Schutte, Heslinga, "Class-specific diffusion models improve military object
+  detection in a low-data domain", arXiv:2604.18076 (2026-04-20). 검증: arXiv
+  abs 페이지 fetch (제목·저자 7인 전원·초록 확인; FLUX.1+LoRA, 군용 차량 15종).

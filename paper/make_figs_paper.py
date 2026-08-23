@@ -22,6 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy import stats
 from matplotlib.patches import FancyArrow, FancyBboxPatch
 from PIL import Image
 
@@ -59,9 +60,9 @@ CELLS = {
 }
 ARM_LABELS = {
     "aug_uniform_inpaint": "tail-uniform",
-    "aug_selective_inpaint": "tail-weighted",
+    "aug_selective_inpaint": "tail-priority",
     "aug_weakuniform_inpaint": "weak-uniform",
-    "aug_weakness_inpaint": "weak-weighted",
+    "aug_weakness_inpaint": "weak-priority",
     "aug_rfs": "RFS",
 }
 
@@ -102,11 +103,12 @@ def fig2_freq_vs_ap():
         pc[pc.experiment == "basic_aug"].groupby("class_id", as_index=False)["ap50_95"].mean()
     )
     df = ap.merge(groups[["class_id", "class_name", "instance_count"]], on="class_id")
+    pr, pp = stats.pearsonr(df.instance_count, df.ap50_95)
     fig, ax = plt.subplots(figsize=(5.0, 3.6))
     for ids, color, label, z in (
         (set(df.class_id) - tail - weak, GRAY, "other classes", 1),
         (tail, BLUE, "tail set (frequency)", 2),
-        (weak, ORANGE, "weak set (measured AP)", 2),
+        (weak, ORANGE, "weak set (validation AP)", 2),
     ):
         sub = df[df.class_id.isin(ids)]
         ax.scatter(
@@ -114,7 +116,7 @@ def fig2_freq_vs_ap():
             edgecolors="white", linewidths=0.5, zorder=z,
         )
     for name, dx, dy, ha in (("YF23", 0, 9, "center"), ("Tu95", 0, 9, "center"),
-                             ("Rafale", 0, -13, "center"), ("F14", 0, -13, "center")):
+                             ("Rafale", 8, -3, "left"), ("F14", 0, -13, "center")):
         row = df[df.class_name == name]
         if len(row):
             ax.annotate(
@@ -126,7 +128,7 @@ def fig2_freq_vs_ap():
     ax.set_xlabel("Training instances per class (log scale)")
     ax.set_ylabel("Baseline test mAP50–95 (3-seed mean)")
     ax.text(
-        0.02, 0.04, "Pearson r = −0.375 (p = 0.013)",
+        0.02, 0.04, f"Pearson r = {pr:.3f} (p = {pp:.3f})".replace("-", "−"),
         transform=ax.transAxes, fontsize=7.5, color=MUTED,
     )
     ax.grid(axis="y", color="#e6e6e6", linewidth=0.6)
@@ -176,7 +178,8 @@ def fig3_dissociation():
         deframe(ax)
     axes[0].set_ylabel("Δ mAP50–95 vs. baseline")
     handles, labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(handles, labels, frameon=False, loc="upper right")
+    fig.legend(handles, labels, frameon=False, ncol=2,
+               loc="lower center", bbox_to_anchor=(0.5, 0.97))
     fig.text(
         0.005, 0.015,
         "Black-edged bar = the arm's targeted scope; error bars = ±1 SD over seeds.",
@@ -197,14 +200,12 @@ def fig4_condition_map():
         pc, _, tail, weak = load_cell(cell)
         base = macro_by_seed(pc, "basic_aug")
         color = BLUE if dataset == "MAD" else ORANGE
-        inpaint_arms = [a for a in ARM_LABELS if a != "aug_rfs" and a in set(pc.experiment)]
-        best_arm = max(inpaint_arms, key=lambda a: (macro_by_seed(pc, a) - base).mean())
         pts = {
             "RFS": ((macro_by_seed(pc, "aug_rfs") - base).mean(), "^"),
-            "best inpainting": ((macro_by_seed(pc, best_arm) - base).mean(), "o"),
+            "tail-uniform": ((macro_by_seed(pc, "aug_uniform_inpaint") - base).mean(), "o"),
         }
         bx = base.mean()
-        ax.plot([bx, bx], [pts["RFS"][0], pts["best inpainting"][0]],
+        ax.plot([bx, bx], [pts["RFS"][0], pts["tail-uniform"][0]],
                 color=color, linewidth=0.8, alpha=0.45, zorder=1)
         for (label, (dy, marker)) in pts.items():
             ax.scatter(bx, dy, marker=marker, s=46, color=color,
@@ -217,14 +218,14 @@ def fig4_condition_map():
         )
     ax.axhline(0, color=MUTED, linewidth=0.8)
     ax.axhspan(-0.03, 0, color="#f2f2f2", zorder=0)
-    ax.set_xlabel("Unaugmented baseline test mAP50–95  (higher → less headroom)")
-    ax.set_ylabel("Best augmentation Δ mAP50–95 (all scope)")
+    ax.set_xlabel("Standard-augmentation baseline test mAP50–95")
+    ax.set_ylabel("Δ mAP50–95 vs. standard-augmentation baseline (all scope)")
     ax.set_ylim(-0.025, 0.098)
     from matplotlib.lines import Line2D
 
     legend = [
         Line2D([], [], marker="^", ls="", color=INK, label="repeat-factor sampling"),
-        Line2D([], [], marker="o", ls="", color=INK, label="best inpainting arm"),
+        Line2D([], [], marker="o", ls="", color=INK, label="tail-uniform arm"),
         Line2D([], [], marker="s", ls="", color=BLUE, label="MAD"),
         Line2D([], [], marker="s", ls="", color=ORANGE, label="MAR20"),
     ]
@@ -283,8 +284,8 @@ def fig1_pipeline_design():
 
     # (b) four-arm crossed allocation comparison
     cells = [
-        ("tail-\nuniform", BLUE), ("tail-\nweighted", BLUE),
-        ("weak-\nuniform", ORANGE), ("weak-\nweighted", ORANGE),
+        ("tail-\nuniform", BLUE), ("tail-\npriority", BLUE),
+        ("weak-\nuniform", ORANGE), ("weak-\npriority", ORANGE),
     ]
     coords = [(2.6, 5.2), (6.4, 5.2), (2.6, 1.6), (6.4, 1.6)]
     for (label, color), (x, y) in zip(cells, coords):
@@ -379,10 +380,10 @@ def figa1_gallery():
     pairs = [
         ("outputs_confirmatory/synthetic/review_sheet_uniform.jpg", 0, "MAD"),
         ("outputs_confirmatory/synthetic/review_sheet_selective.jpg", 2, "MAD"),
-        ("outputs_confirmatory/synthetic/review_sheet_selective.jpg", 3, "MAD"),
         ("outputs_confirmatory/synthetic/review_sheet_weakness.jpg", 3, "MAD"),
         ("outputs_confirmatory/synthetic/review_sheet_weakness.jpg", 7, "MAD"),
         ("outputs_mar20_yolo/synthetic/review_sheet_selective.jpg", 0, "MAR20"),
+        ("outputs_mar20_yolo/synthetic/review_sheet_uniform.jpg", 4, "MAR20"),
         ("outputs_mar20_yolo/synthetic/review_sheet_weakness_uniform.jpg", 0, "MAR20"),
         ("outputs_mar20_yolo/synthetic/review_sheet_weakness.jpg", 2, "MAR20"),
     ]
@@ -402,3 +403,10 @@ def figa1_gallery():
                 ax.set_ylabel(tag, fontsize=7)
     fig.subplots_adjust(wspace=0.03, hspace=0.08)
     save(fig, "figa1_gallery")
+
+
+if __name__ == "__main__":
+    # These are defined below the first __main__ block; a second guard here
+    # keeps a single `python make_figs_paper.py` run regenerating every figure.
+    fig6_perclass_delta()
+    figa1_gallery()

@@ -1,5 +1,7 @@
 \appendix
 \section{Generation details}\label{app:gen}
+\paragraph{Generator and revision}
+All pools were generated with the \texttt{runwayml/stable-diffusion-inpainting} checkpoint. The confirmatory-phase generation runs resolved this model to Hugging Face snapshot \texttt{8a4288a76071f7280aedbdb3253bdb9e9d5d84bb} (recovered from the archived run logs), and the configuration files now pin this revision for regeneration. The three exploratory-phase pools used the same model identifier, but their runtime did not log the resolved revision, and the Diffusers/PyTorch versions of the generation environment were not preserved.
 \paragraph{Scene and negative prompts}
 The five scene prompts per dataset (rotated per generated image) and the dataset-specific negative prompts are reproduced verbatim below.
 \begin{itemize}\small
@@ -31,9 +33,9 @@ MAR20 tail & A11, A15, A18, A4, A6, A7 \\
 MAR20 weak & A1, A12, A15, A16, A19, A5 \\
 \bottomrule\end{tabular}\end{table}
 \paragraph{Realized allocation quotas}
-\begin{table}[h]\centering\small\caption{Per-class quotas, MAD.}
+\begin{table}[h]\centering\small\caption{Per-class quotas, MAD (left column pair: tail-set arms; right pair: weak-set arms).}
 \begin{tabular}{lrr@{\qquad}lrr}\toprule
-Class & unif. & wtd. & Class & unif. & wtd. \\ \midrule
+Class & unif. & prio. & Class & unif. & prio. \\ \midrule
 Mig31 & 77 & 67 & C17 & 77 & 69 \\
 RQ4 & 77 & 81 & EF2000 & 77 & 100 \\
 Su34 & 77 & 76 & F14 & 77 & 65 \\
@@ -48,9 +50,9 @@ P3 & 77 & 127 & Mirage2000 & 77 & 69 \\
 YF23 & 77 & 121 & Rafale & 77 & 78 \\
 E7 & 76 & 126 & Tornado & 77 & 74 \\
 \bottomrule\end{tabular}\end{table}
-\begin{table}[h]\centering\small\caption{Per-class quotas, MAR20.}
+\begin{table}[h]\centering\small\caption{Per-class quotas, MAR20 (left column pair: tail-set arms; right pair: weak-set arms).}
 \begin{tabular}{lrr@{\qquad}lrr}\toprule
-Class & unif. & wtd. & Class & unif. & wtd. \\ \midrule
+Class & unif. & prio. & Class & unif. & prio. \\ \midrule
 A15 & 84 & 100 & A1 & 84 & 98 \\
 A7 & 84 & 56 & A5 & 83 & 78 \\
 A4 & 83 & 44 & A12 & 83 & 81 \\
@@ -72,7 +74,7 @@ right half of row three: MAR20.}
 \section{Per-class results}\label{app:perclass}
 \begin{table}[h]\centering\small\caption{MAD tail classes: baseline test \mapm{} and per-arm $\Delta$ (3-seed means).}\label{tab:pc-mad-tail}
 \begin{tabular}{lrrrrrrr}\toprule
-Class & $n$ & base & tail-unif. & tail-wtd. & weak-unif. & weak-wtd. & RFS \\ \midrule
+Class & $n$ & base & tail-unif. & tail-prio. & weak-unif. & weak-prio. & RFS \\ \midrule
 YF23 & 97 & 0.801 & -0.014 & +0.001 & -0.022 & -0.004 & +0.040 \\
 AG600 & 153 & 0.763 & +0.059 & +0.032 & +0.041 & +0.018 & +0.034 \\
 Be200 & 209 & 0.757 & +0.020 & +0.012 & +0.023 & -0.003 & +0.078 \\
@@ -89,7 +91,7 @@ RQ4 & 212 & 0.404 & +0.062 & +0.010 & +0.027 & +0.030 & +0.194 \\
 \bottomrule\end{tabular}\end{table}
 \begin{table}[h]\centering\small\caption{MAD weak classes: baseline test \mapm{} and per-arm $\Delta$ (3-seed means).}\label{tab:pc-mad-weak}
 \begin{tabular}{lrrrrrrr}\toprule
-Class & $n$ & base & tail-unif. & tail-wtd. & weak-unif. & weak-wtd. & RFS \\ \midrule
+Class & $n$ & base & tail-unif. & tail-prio. & weak-unif. & weak-prio. & RFS \\ \midrule
 Tornado & 273 & 0.561 & +0.047 & +0.048 & +0.123 & +0.096 & +0.106 \\
 F4 & 411 & 0.555 & -0.026 & -0.036 & +0.014 & -0.015 & +0.052 \\
 F35 & 746 & 0.518 & +0.029 & +0.035 & +0.046 & +0.076 & +0.066 \\
@@ -106,7 +108,7 @@ Rafale & 369 & 0.269 & +0.078 & +0.039 & +0.086 & +0.048 & +0.137 \\
 \bottomrule\end{tabular}\end{table}
 \begin{table}[h]\centering\small\caption{MAR20 (all 20 classes): baseline test \mapm{} and per-arm $\Delta$ (3-seed means).}\label{tab:pc-mar20}
 \begin{tabular}{lrrrrrrr}\toprule
-Class & $n$ & base & tail-unif. & tail-wtd. & weak-unif. & weak-wtd. & RFS \\ \midrule
+Class & $n$ & base & tail-unif. & tail-prio. & weak-unif. & weak-prio. & RFS \\ \midrule
 A7 & 150 & 0.743 & +0.022 & +0.015 & +0.023 & -0.007 & -0.008 \\
 A17 & 360 & 0.738 & -0.008 & +0.005 & -0.017 & -0.017 & +0.005 \\
 A10 & 305 & 0.686 & -0.005 & -0.003 & -0.015 & -0.013 & -0.016 \\
@@ -128,30 +130,39 @@ A18 & 117 & 0.419 & +0.011 & +0.049 & -0.045 & -0.048 & +0.044 \\
 A5 & 366 & 0.343 & +0.014 & +0.021 & +0.049 & +0.045 & -0.022 \\
 A15 & 165 & 0.214 & +0.079 & +0.072 & +0.044 & +0.073 & -0.011 \\
 \bottomrule\end{tabular}\end{table}
-\section{Hallucination audit and object-level gate}\label{app:audit}
-A detector-based scan of all 3{,}000 MAD synthetic images (the three originally generated pools) flagged images containing hallucinated, unlabeled aircraft. Table~\ref{tab:gate} reports per-pool removal statistics; a 450-image human-verified audit sample estimated a 10.2\% image-level hallucination rate, consistent with the 11.1\% full-scan removal rate.
+\section{Generation quality, hallucination audit, and object-level gate}\label{app:audit}
+\paragraph{Quality metrics}
+FID (torchmetrics FrechetInceptionDistance, Inception-V3 features) is computed per pool against the real training images containing that pool's target classes, so the reference sets differ across pools and cross-pool FID is indicative rather than strictly comparable; CLIPScore (\texttt{openai/clip-vit-base-patch16}) measures image--prompt similarity and LPIPS (AlexNet backbone) measures source--output distance, both on 200 sampled images per pool. The metrics were computed in the exploratory phase and therefore cover the three originally generated pools; the weak-uniform pool, generated later in the confirmatory phase, passed the same rule-based verification but was not scored.
+\begin{table}[h]\centering\small\caption{Per-pool quality metrics (three exploratory-phase MAD pools).}\label{tab:quality}
+\begin{tabular}{lrrrr}\toprule
+Pool & FID & FID ref.\ ($n$ real) & CLIPScore & LPIPS \\ \midrule
+tail-uniform & 89.7 & 1,797 & 19.6 $\pm$ 3.3 & 0.262 \\
+tail-priority & 87.7 & 1,797 & 19.1 $\pm$ 3.8 & 0.244 \\
+weak-priority & 100.4 & 3,744 & 20.2 $\pm$ 3.4 & 0.272 \\
+\bottomrule\end{tabular}\end{table}
+A detector-based scan of all 3{,}000 MAD synthetic images (the three originally generated pools) flagged images containing hallucinated, unlabeled aircraft. Table~\ref{tab:gate} reports per-pool removal statistics; a detector-based paired audit of a 450-image sample (150 per pool) flagged a net increase in off-mask detections in 10.2\% of images, consistent with the 11.1\% full-scan removal rate.
 \begin{table}[h]\centering\small\caption{Object-level gate: full-corpus scan of the MAD pools.}\label{tab:gate}
 \begin{tabular}{lrrrr}\toprule
-Pool & images & removed & removed (\%) & objects removed \\ \midrule
-selective & 1000 & 82 & 8.2 & 159 \\
-uniform & 1000 & 85 & 8.5 & 170 \\
-weakness & 1000 & 165 & 16.5 & 516 \\
+Pool & images & removed & removed (\%) & flagged objects removed \\ \midrule
+tail-priority & 1000 & 82 & 8.2 & 159 \\
+tail-uniform & 1000 & 85 & 8.5 & 170 \\
+weak-priority & 1000 & 165 & 16.5 & 516 \\
 \midrule total & 3000 & 332 & 11.1 & 845 \\
 \bottomrule\end{tabular}\end{table}
 Retraining the three arms on gated pools (seed matched to the ungated runs) changed macro \mapm{} only marginally:
 \begin{table}[h]\centering\small\caption{Gated $-$ ungated macro \mapm{} (single matched seed).}\label{tab:gated}
 \begin{tabular}{lrrr}\toprule Arm & all & tail & weak \\ \midrule
-uniform & +0.005 & +0.009 & -0.009 \\
-selective & -0.017 & -0.012 & -0.021 \\
-weakness & -0.001 & -0.002 & -0.008 \\
+tail-uniform & +0.005 & +0.009 & -0.009 \\
+tail-priority & -0.017 & -0.012 & -0.021 \\
+weak-priority & -0.001 & -0.002 & -0.008 \\
 \bottomrule\end{tabular}\end{table}
 
 \begin{figure}[h]\centering
 \includegraphics[width=0.9\linewidth]{figures/figa2_confusion.png}
 \caption{Normalized confusion matrix of the MAD \texttt{basic\_aug}
 baseline (one seed). The dominant off-diagonal mass lies in the
-background row (missed detections), the error mode targeted by
-background diversification (Section~6.2).}
+background row (missed detections), the error mode hypothesized to be
+affected by background diversification (Section~\ref{sec:mechanism}).}
 \label{fig:confusion}
 \end{figure}
 

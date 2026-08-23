@@ -16,6 +16,16 @@ A = L.append
 A(r"\appendix")
 A(r"\section{Generation details}\label{app:gen}")
 
+A(r"\paragraph{Generator and revision}")
+A("All pools were generated with the \\texttt{runwayml/stable-diffusion-inpainting} "
+  "checkpoint. The confirmatory-phase generation runs resolved this model to "
+  "Hugging Face snapshot \\texttt{8a4288a76071f7280aedbdb3253bdb9e9d5d84bb} "
+  "(recovered from the archived run logs), and the configuration files now pin "
+  "this revision for regeneration. The three exploratory-phase pools used the "
+  "same model identifier, but their runtime did not log the resolved revision, "
+  "and the Diffusers/PyTorch versions of the generation environment were not "
+  "preserved.")
+
 cfgs = {"MAD": "configs/confirmatory.yaml", "MAR20": "configs/mar20_yolo.yaml"}
 A(r"\paragraph{Scene and negative prompts}")
 A("The five scene prompts per dataset (rotated per generated image) and the "
@@ -61,11 +71,11 @@ for ds, root, plans in (
         g = pd.read_csv(ROOT / root / "analysis" / "class_groups.csv").set_index("class_id").class_name
         df["name"] = df.class_id.map(g)
         frames[pl] = df.set_index("name").num_synthetic_images
-    tail_tbl = pd.DataFrame({"tail-uniform": frames["uniform"], "tail-weighted": frames["selective"]}).dropna().astype(int)
-    weak_tbl = pd.DataFrame({"weak-uniform": frames["weakness_uniform"], "weak-weighted": frames["weakness"]}).dropna().astype(int)
-    A(rf"\begin{{table}}[h]\centering\small\caption{{Per-class quotas, {ds}.}}")
+    tail_tbl = pd.DataFrame({"tail-uniform": frames["uniform"], "tail-priority": frames["selective"]}).dropna().astype(int)
+    weak_tbl = pd.DataFrame({"weak-uniform": frames["weakness_uniform"], "weak-priority": frames["weakness"]}).dropna().astype(int)
+    A(rf"\begin{{table}}[h]\centering\small\caption{{Per-class quotas, {ds} (left column pair: tail-set arms; right pair: weak-set arms).}}")
     A(r"\begin{tabular}{lrr@{\qquad}lrr}\toprule")
-    A(r"Class & unif. & wtd. & Class & unif. & wtd. \\ \midrule")
+    A(r"Class & unif. & prio. & Class & unif. & prio. \\ \midrule")
     tl, wl = tail_tbl.reset_index().values.tolist(), weak_tbl.reset_index().values.tolist()
     for i in range(max(len(tl), len(wl))):
         a = tl[i] if i < len(tl) else ["", "", ""]
@@ -118,8 +128,8 @@ def perclass_table(root, ids, arms, caption, label):
         A(" & ".join(row) + r" \\")
     A(r"\bottomrule\end{tabular}\end{table}")
 
-mad_arms = {"tail-unif.": "aug_uniform_inpaint", "tail-wtd.": "aug_selective_inpaint",
-            "weak-unif.": "aug_weakuniform_inpaint", "weak-wtd.": "aug_weakness_inpaint",
+mad_arms = {"tail-unif.": "aug_uniform_inpaint", "tail-prio.": "aug_selective_inpaint",
+            "weak-unif.": "aug_weakuniform_inpaint", "weak-prio.": "aug_weakness_inpaint",
             "RFS": "aug_rfs"}
 gmad = pd.read_csv(ROOT / "outputs_confirmatory/analysis/class_groups.csv")
 tail_ids = set(gmad[gmad.group == "tail"].class_id)
@@ -133,19 +143,45 @@ perclass_table("outputs_mar20_yolo", set(g20.class_id), mad_arms,
                "MAR20 (all 20 classes): baseline test \\mapm{} and per-arm $\\Delta$ (3-seed means).", "tab:pc-mar20")
 
 # ---------------- Appendix C: hallucination audit ----------------
-A(r"\section{Hallucination audit and object-level gate}\label{app:audit}")
+A(r"\section{Generation quality, hallucination audit, and object-level gate}\label{app:audit}")
+
+A(r"\paragraph{Quality metrics}")
+QL = {"uniform": "tail-uniform", "selective": "tail-priority",
+      "weakness": "weak-priority", "weakness_uniform": "weak-uniform"}
+qr = pd.read_csv(ROOT / "outputs_full/synthetic/quality_report.csv")
+A("FID (torchmetrics FrechetInceptionDistance, Inception-V3 features) is "
+  "computed per pool against the real training images containing that pool's "
+  "target classes, so the reference sets differ across pools and cross-pool "
+  "FID is indicative rather than strictly comparable; CLIPScore "
+  "(\\texttt{openai/clip-vit-base-patch16}) measures image--prompt similarity "
+  "and LPIPS (AlexNet backbone) measures source--output distance, both on 200 sampled images per "
+  "pool. The metrics were computed in the exploratory phase and therefore "
+  "cover the three originally generated pools; the weak-uniform pool, "
+  "generated later in the confirmatory phase, passed the same rule-based "
+  "verification but was not scored.")
+A(r"\begin{table}[h]\centering\small\caption{Per-pool quality metrics (three exploratory-phase MAD pools).}\label{tab:quality}")
+A(r"\begin{tabular}{lrrrr}\toprule")
+A(r"Pool & FID & FID ref.\ ($n$ real) & CLIPScore & LPIPS \\ \midrule")
+for _pl in ("uniform", "selective", "weakness"):
+    _f = pd.read_csv(ROOT / f"outputs_full/synthetic/fid_by_class_{_pl}.csv")
+    _ov = _f[_f.class_name == "__overall__"].iloc[0]
+    _q = qr[qr.plan == _pl]
+    A(rf"{QL[_pl]} & {_ov.fid:.1f} & {int(_ov.n_real):,} & {_q.clip_score.mean():.1f} $\pm$ {_q.clip_score.std():.1f} & {_q.lpips.mean():.3f} \\")
+A(r"\bottomrule\end{tabular}\end{table}")
 gs = pd.read_csv(ROOT / "outputs_full/synthetic/object_gate_summary.csv")
+PLAN_LABEL = {"uniform": "tail-uniform", "selective": "tail-priority",
+              "weakness": "weak-priority", "weakness_uniform": "weak-uniform"}
 A("A detector-based scan of all 3{,}000 MAD synthetic images (the three "
   "originally generated pools) flagged images containing hallucinated, "
   "unlabeled aircraft. Table~\\ref{tab:gate} reports per-pool removal "
-  "statistics; a 450-image human-verified audit sample estimated a 10.2\\% "
-  "image-level hallucination rate, consistent with the 11.1\\% full-scan "
-  "removal rate.")
+  "statistics; a detector-based paired audit of a 450-image sample (150 per "
+  "pool) flagged a net increase in off-mask detections in 10.2\\% of images, "
+  "consistent with the 11.1\\% full-scan removal rate.")
 A(r"\begin{table}[h]\centering\small\caption{Object-level gate: full-corpus scan of the MAD pools.}\label{tab:gate}")
 A(r"\begin{tabular}{lrrrr}\toprule")
-A(r"Pool & images & removed & removed (\%) & objects removed \\ \midrule")
+A(r"Pool & images & removed & removed (\%) & flagged objects removed \\ \midrule")
 for _, r in gs.iterrows():
-    A(rf"{esc(r['plan'])} & {int(r['n'])} & {int(r['dropped'])} & {r['drop_pct']:.1f} & {int(r['extra_objects_removed'])} \\")
+    A(rf"{esc(PLAN_LABEL.get(r['plan'], r['plan']))} & {int(r['n'])} & {int(r['dropped'])} & {r['drop_pct']:.1f} & {int(r['extra_objects_removed'])} \\")
 A(rf"\midrule total & {int(gs.n.sum())} & {int(gs.dropped.sum())} & {100*gs.dropped.sum()/gs.n.sum():.1f} & {int(gs.extra_objects_removed.sum())} \\")
 A(r"\bottomrule\end{tabular}\end{table}")
 
@@ -165,7 +201,7 @@ for base_arm in ("aug_uniform_inpaint", "aug_selective_inpaint", "aug_weakness_i
         if ids is not None:
             gsel = gsel[gsel.class_id.isin(ids)]; fsel = fsel[fsel.class_id.isin(ids)]
         cells.append(gsel.ap50_95.mean() - fsel.ap50_95.mean())
-    A(esc(base_arm.replace("aug_", "").replace("_inpaint", "")) + " & " +
+    A(esc(PLAN_LABEL.get(base_arm.replace("aug_", "").replace("_inpaint", ""), base_arm)) + " & " +
       " & ".join(f"{v:+.3f}" for v in cells) + r" \\")
 A(r"\bottomrule\end{tabular}\end{table}")
 A(r"""
@@ -173,8 +209,8 @@ A(r"""
 \includegraphics[width=0.9\linewidth]{figures/figa2_confusion.png}
 \caption{Normalized confusion matrix of the MAD \texttt{basic\_aug}
 baseline (one seed). The dominant off-diagonal mass lies in the
-background row (missed detections), the error mode targeted by
-background diversification (Section~6.2).}
+background row (missed detections), the error mode hypothesized to be
+affected by background diversification (Section~\ref{sec:mechanism}).}
 \label{fig:confusion}
 \end{figure}
 """)
